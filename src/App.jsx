@@ -186,21 +186,29 @@ export default function App() {
         } else {
             setCustomPasswords({});
         }
+      }, (error) => {
+       console.error("Gagal mengambil password:", error);
     });
 
-    // SEEDING DATA
+    // --- SEEDING DATA NONAKTIF ---
+    // Kode di bawah ini dikomentari agar tidak mereset data setiap reload.
+    // Jika ingin melakukan reset manual via kodingan di masa depan, hilangkan komentar blok ini.
+    
+    /*
     const seedData = async () => {
       const batch = writeBatch(db);
       let batchCount = 0;
 
-      // 1. HAPUS DATA MASA DEPAN (21-25 Jan) yg mungkin salah format
+      // Hapus Data Masa Depan
       const badDates = ['2026-01-21', '2026-01-22', '2026-01-23', '2026-01-24', '2026-01-25'];
       for (const d of badDates) {
-          batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', d));
-          batchCount++;
+          try {
+            batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', d));
+            batchCount++;
+          } catch(e) { console.log(e); }
       }
 
-      // 2. SEED DATA HISTORIS & PREPAID
+      // Seed Data Historis
       for (const log of HISTORICAL_LOGS) {
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', log.date);
         
@@ -252,12 +260,18 @@ export default function App() {
       }
       
       if (batchCount > 0) {
-          await batch.commit();
+          try {
+            await batch.commit();
+            console.log("Seeding done.");
+          } catch (e) {
+            console.error("Gagal seeding data:", e);
+          }
       }
     };
     
-    seedData();
-
+    // seedData(); // <-- FUNGSI INI DIMATIKAN
+    */
+   
     return () => {
       unsubLogs();
       unsubPwd();
