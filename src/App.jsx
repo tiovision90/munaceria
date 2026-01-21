@@ -1,12 +1,25 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
-  getFirestore, collection, doc, setDoc, getDoc, updateDoc,
-  onSnapshot, query, deleteDoc, writeBatch 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  updateDoc,
+  onSnapshot, 
+  query, 
+  deleteDoc, 
+  writeBatch,
+  addDoc,           // SUDAH DITAMBAHKAN
+  orderBy,          // SUDAH DITAMBAHKAN
+  serverTimestamp,  // SUDAH DITAMBAHKAN
+  where
 } from 'firebase/firestore';
 import { 
-  getAuth, signInAnonymously, onAuthStateChanged, 
-  signInWithCustomToken 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   Moon, Sun, CheckCircle, XCircle, FileText, 
