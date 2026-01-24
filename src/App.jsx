@@ -1391,7 +1391,8 @@ ${missed}
 
 📝 Catatan: ${note}
 
-_Direkap via Aplikasi Muna Digital_`;
+Klik link dibawah untuk membuat laporan :
+https://www.munaceria.online`;
   };
 
   const copyToClipboard = (text) => {
