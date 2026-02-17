@@ -21,7 +21,7 @@ import {
   ChevronRight, Save, MessageSquare, Clock, BarChart3, TrendingUp,
   AlertCircle, ChevronDown, Filter, UserPlus, Trash2, MapPin, Heart, Star, X,
   Minus, Plus, Settings, Edit, Lock, LockKeyhole, Info, KeyRound, Database, CheckCheck, Wallet, Bell, History,
-  RefreshCw, Wifi, WifiOff, Share2, CloudDownload, Undo2
+  RefreshCw, Wifi, WifiOff, Share2, CloudDownload, Undo2, Banknote
 } from 'lucide-react';
 
 // --- KONFIGURASI FIREBASE MANUAL (MUNACERIA2) ---
@@ -44,6 +44,7 @@ try {
 
 const auth = getAuth(app);
 const db = getFirestore(app);
+// Using the hardcoded appId from your code to maintain path consistency
 const appId = 'munaceria'; 
 
 // --- HELPER: DATE UTILS ---
@@ -123,6 +124,7 @@ export default function App() {
   const [currentPatrolNote, setCurrentPatrolNote] = useState("");
   const [currentOfficers, setCurrentOfficers] = useState([]);
   const [customPasswords, setCustomPasswords] = useState({});
+  const [financialConfig, setFinancialConfig] = useState({ initialBalance: 0 });
 
   // UI States
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' }); 
@@ -199,10 +201,21 @@ export default function App() {
             setCustomPasswords({});
         }
     });
+
+    // Listener untuk Konfigurasi Keuangan (Saldo Awal)
+    const finRef = doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'financials');
+    const unsubFin = onSnapshot(finRef, (docSnap) => {
+        if (docSnap.exists()) {
+            setFinancialConfig(docSnap.data());
+        } else {
+            setFinancialConfig({ initialBalance: 0 });
+        }
+    });
    
     return () => {
       unsubLogs();
       unsubPwd();
+      unsubFin();
     };
   }, [user]);
 
@@ -490,6 +503,16 @@ export default function App() {
       }
   };
 
+  const handleUpdateFinancials = async (newVal) => {
+      try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'financials'), { initialBalance: parseInt(newVal) || 0 }, { merge: true });
+          showToast('Saldo awal diperbarui!', 'success');
+      } catch (e) {
+          console.error(e);
+          showToast("Gagal menyimpan saldo awal", "error");
+      }
+  };
+
   if (loading) return (
       <div className="flex flex-col h-screen items-center justify-center bg-slate-900 text-white animate-pulse">
           <div className="mb-4 text-emerald-500 font-bold text-xl">Muna Permai 2</div>
@@ -562,6 +585,7 @@ export default function App() {
                 logs={logs}
                 todayStr={todayStr}
                 showToast={showToast}
+                financialConfig={financialConfig}
               />
             )}
 
@@ -596,6 +620,8 @@ export default function App() {
             onBack={() => setView(lastView)} 
             passwords={customPasswords}
             onUpdatePasswords={handleSavePasswords}
+            financialConfig={financialConfig}
+            onUpdateFinancials={handleUpdateFinancials}
             onDeleteLog={handleDeleteLog}
             onUpdateLog={handleUpdateLog}
             showToast={showToast}
@@ -751,7 +777,7 @@ function LoginPage({ onCheckIn, onAdmin, allResidents, passwords, showToast }) {
           </div>
 
           <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
-             <label className="block text-xs font-bold text-slate-500 uppercase flex items-center gap-1">
+              <label className="block text-xs font-bold text-slate-500 uppercase flex items-center gap-1">
                   <Users size={12} /> Anggota Regu
              </label>
             {officers.map((officer, index) => (
@@ -811,7 +837,7 @@ function LoginPage({ onCheckIn, onAdmin, allResidents, passwords, showToast }) {
   );
 }
 
-function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast }) {
+function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, financialConfig }) {
   const todayLog = logs.find(l => l.date === todayStr);
   const todayIncome = todayLog?.totalAmount || 0;
   // Get details or fallback to 0
@@ -838,6 +864,14 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast }) {
     const reportNames = activeReport.officers || [];
     return currentNames.some(name => reportNames.includes(name));
   }, [activeReport, officers]);
+
+  // Calculate Totals for Saldo
+  const totalCollectedAllTime = useMemo(() => {
+      return logs.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+  }, [logs]);
+
+  const initialBalance = financialConfig?.initialBalance || 0;
+  const grandTotal = totalCollectedAllTime + initialBalance;
 
   // Calculate patrol days for the current month
   // FIX: Only count days up to today to prevent future prepaid logs from inflating the target
@@ -969,6 +1003,22 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast }) {
              </div>
           </div>
       )}
+
+      {/* --- KARTU TOTAL SALDO --- */}
+      <div className="bg-gradient-to-r from-blue-600 to-blue-500 p-4 rounded-2xl shadow-lg text-white">
+        <div className="flex items-center justify-between mb-2 opacity-90">
+            <div className="flex items-center gap-2">
+                <Wallet size={16} />
+                <span className="text-xs font-bold uppercase tracking-wider">Total Saldo Kas</span>
+            </div>
+            <div className="bg-white/20 p-1.5 rounded-lg backdrop-blur-sm">
+                <Banknote size={16} className="text-white" />
+            </div>
+        </div>
+        <div className="text-3xl font-bold tracking-tight">
+            Rp {grandTotal.toLocaleString('id-ID')}
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between h-auto min-h-[7rem]">
@@ -1229,6 +1279,9 @@ function ReportScreen({ logs, onBack, showToast }) {
   const [activeTab, setActiveTab] = useState('history'); 
   const [selectedMonthKey, setSelectedMonthKey] = useState('');
   const [selectedResident, setSelectedResident] = useState(null); 
+  
+  // NEW: State for expanding months in history
+  const [expandedMonths, setExpandedMonths] = useState({});
 
   const stats = useMemo(() => {
     const monthlyData = {}; 
@@ -1334,11 +1387,49 @@ function ReportScreen({ logs, onBack, showToast }) {
     return { monthlyData, monthKeys };
   }, [logs]);
 
+  // NEW: Group logs for history by month
+  const historyGroups = useMemo(() => {
+    const groups = {};
+    // Sort logs desc first
+    const sortedLogs = [...logs].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    sortedLogs.forEach(log => {
+        if (!log.officers || log.officers.length === 0) return;
+
+        const date = new Date(log.date);
+        const monthKey = date.toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+        
+        if (!groups[monthKey]) {
+            groups[monthKey] = [];
+        }
+        groups[monthKey].push(log);
+    });
+    return groups;
+  }, [logs]);
+
   useEffect(() => {
     if (stats.monthKeys.length > 0 && !selectedMonthKey) {
         setSelectedMonthKey(stats.monthKeys[0]);
     }
   }, [stats.monthKeys, selectedMonthKey]);
+
+  // NEW: Auto-expand current month
+  useEffect(() => {
+      const currentMonthKey = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+      setExpandedMonths(prev => {
+          if (Object.keys(prev).length === 0) {
+              return { [currentMonthKey]: true };
+          }
+          return prev;
+      });
+  }, []); 
+
+  const toggleMonth = (monthKey) => {
+      setExpandedMonths(prev => ({
+          ...prev,
+          [monthKey]: !prev[monthKey]
+      }));
+  };
 
   const selectedStats = stats.monthlyData[selectedMonthKey];
 
@@ -1561,51 +1652,68 @@ https://www.munaceria.online`;
 
         {activeTab === 'history' && (
             <>
-            {logs.filter(l => l.officers && l.officers.length > 0).length === 0 ? (
+            {Object.keys(historyGroups).length === 0 ? (
               <div className="text-center py-20 text-slate-400">
                 <FileText size={48} className="mx-auto mb-4 opacity-50" />
                 <p>Belum ada data patroli tersimpan.</p>
               </div>
             ) : (
                 <div className="space-y-4">
-                    {logs
-                        .filter(l => l.officers && l.officers.length > 0) 
-                        .map((log) => (
-                        <div key={log.date} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
-                            <div className="flex items-center gap-2">
-                            <Calendar size={14} className="text-slate-500" />
-                            <span className="text-sm font-semibold text-slate-700">{new Date(log.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
-                            </div>
-                            <span className="text-emerald-600 font-bold text-sm">+ Rp {(log.totalAmount || 0).toLocaleString()}</span>
-                        </div>
-                        
-                        <div className="p-4">
-                            <div className="flex justify-between text-xs text-slate-500 mb-2">
-                            <span>Petugas: {(log.officers || []).join(', ')}</span>
-                            </div>
+                    {Object.keys(historyGroups).map(monthKey => (
+                        <div key={monthKey} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                            <button 
+                                onClick={() => toggleMonth(monthKey)}
+                                className="w-full flex justify-between items-center p-4 bg-slate-50 hover:bg-slate-100 transition-colors"
+                            >
+                                <span className="font-bold text-slate-700 text-sm flex items-center gap-2">
+                                    <Calendar size={16} className="text-emerald-500" />
+                                    {monthKey}
+                                </span>
+                                {expandedMonths[monthKey] ? <ChevronDown size={20} className="text-slate-400"/> : <ChevronRight size={20} className="text-slate-400"/>}
+                            </button>
                             
-                            {log.note && (
-                                <div className="mb-3 p-2 bg-amber-50 text-amber-800 text-xs rounded border border-amber-100 italic">
-                                    "{log.note}"
+                            {expandedMonths[monthKey] && (
+                                <div className="p-4 space-y-4 border-t border-slate-100 bg-slate-50/50">
+                                    {historyGroups[monthKey].map(log => (
+                                        <div key={log.date} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                            <div className="bg-slate-50 p-3 border-b border-slate-100 flex justify-between items-center">
+                                                <div className="flex items-center gap-2">
+                                                <Calendar size={14} className="text-slate-500" />
+                                                <span className="text-sm font-semibold text-slate-700">{new Date(log.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                                                </div>
+                                                <span className="text-emerald-600 font-bold text-sm">+ Rp {(log.totalAmount || 0).toLocaleString()}</span>
+                                            </div>
+                                            
+                                            <div className="p-4">
+                                                <div className="flex justify-between text-xs text-slate-500 mb-2">
+                                                <span>Petugas: {(log.officers || []).join(', ')}</span>
+                                                </div>
+                                                
+                                                {log.note && (
+                                                    <div className="mb-3 p-2 bg-amber-50 text-amber-800 text-xs rounded border border-amber-100 italic">
+                                                        "{log.note}"
+                                                    </div>
+                                                )}
+
+                                                {log.missedHouses && log.missedHouses.length > 0 ? (
+                                                <div className="mt-2 text-xs text-rose-600 bg-rose-50 p-2 rounded border border-rose-100">
+                                                    <span className="font-bold block mb-1">Warga Kosong:</span> {log.missedHouses.join(', ')}
+                                                </div>
+                                                ) : (
+                                                <div className="mt-2 text-xs text-emerald-600 font-medium flex items-center gap-1"><CheckCircle size={12} /> Semua lengkap!</div>
+                                                )}
+
+                                                <button 
+                                                    onClick={() => copyToClipboard(formatWAMessage(log))}
+                                                    className="mt-4 w-full py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors"
+                                                >
+                                                    <Share2 size={14} /> Salin Laporan WA
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             )}
-
-                            {log.missedHouses && log.missedHouses.length > 0 ? (
-                            <div className="mt-2 text-xs text-rose-600 bg-rose-50 p-2 rounded border border-rose-100">
-                                <span className="font-bold block mb-1">Warga Kosong:</span> {log.missedHouses.join(', ')}
-                            </div>
-                            ) : (
-                            <div className="mt-2 text-xs text-emerald-600 font-medium flex items-center gap-1"><CheckCircle size={12} /> Semua lengkap!</div>
-                            )}
-
-                            <button 
-                                onClick={() => copyToClipboard(formatWAMessage(log))}
-                                className="mt-4 w-full py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors"
-                            >
-                                <Share2 size={14} /> Salin Laporan WA
-                            </button>
-                        </div>
                         </div>
                     ))}
                 </div>
@@ -1707,12 +1815,14 @@ function ResidentCalendarModal({ resident, monthKey, year, month, logs, onClose 
     );
 }
 
-function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, onDeleteLog, onUpdateLog, showToast }) {
+function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConfig, onUpdateFinancials, onDeleteLog, onUpdateLog, showToast }) {
     const [auth, setAuth] = useState(false);
     const [pin, setPin] = useState('');
     const [editLog, setEditLog] = useState(null);
     const [viewMode, setViewMode] = useState('list'); 
     const [deletingLogId, setDeletingLogId] = useState(null);
+    const [tempBalance, setTempBalance] = useState('');
+    const [newLogDate, setNewLogDate] = useState('');
 
     const checkAuth = (e) => {
         e.preventDefault();
@@ -1740,6 +1850,42 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, onDeleteLog, 
         setViewMode('list');
     }
 
+    const handleSaveBalance = () => {
+        onUpdateFinancials(tempBalance);
+        setViewMode('list');
+    }
+
+    const handleCreateLogCheck = () => {
+        if (!newLogDate) return;
+        const existing = logs.find(l => l.date === newLogDate);
+        if (existing) {
+            setEditLog(existing);
+            showToast("Laporan tanggal tersebut sudah ada, membuka mode edit.", "info");
+        } else {
+            // Template Log Baru
+            setEditLog({
+                date: newLogDate,
+                officers: [],
+                officerGang: '-',
+                entries: {},
+                prepaid: {},
+                totalAmount: 0,
+                missedHouses: [],
+                latePayments: {},
+                note: 'Input Manual Admin'
+            });
+            showToast("Membuat laporan baru untuk tanggal " + newLogDate, "success");
+        }
+        setViewMode('edit');
+    };
+
+    // Initialize temp balance when opening financial view
+    useEffect(() => {
+        if (viewMode === 'financial') {
+            setTempBalance(financialConfig?.initialBalance || 0);
+        }
+    }, [viewMode, financialConfig]);
+
     if (!auth) {
         return (
             <div className="p-6 flex flex-col items-center justify-center h-full">
@@ -1766,6 +1912,84 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, onDeleteLog, 
         return <PasswordManager currentPasswords={passwords} onSave={onUpdatePasswords} onBack={() => setViewMode('list')} showToast={showToast} />;
     }
 
+    if (viewMode === 'financial') {
+        return (
+             <div className="flex flex-col h-full bg-slate-50">
+                <div className="p-4 bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm flex justify-between items-center">
+                    <h2 className="font-bold text-lg text-slate-800">Saldo Awal / Kas Sebelumnya</h2>
+                    <button onClick={() => setViewMode('list')} className="text-sm text-slate-500 font-bold">Kembali</button>
+                </div>
+
+                <div className="p-6 flex flex-col items-center justify-center flex-1">
+                    <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6 text-blue-600">
+                        <Wallet size={32} />
+                    </div>
+                    
+                    <p className="text-sm text-slate-500 text-center mb-2 max-w-xs">
+                        Masukkan jumlah uang kas/saldo yang ada <strong>sebelum</strong> sistem ini digunakan.
+                    </p>
+
+                    <div className="w-full max-w-xs mb-6 relative">
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">Rp</div>
+                        <input 
+                            type="number"
+                            value={tempBalance}
+                            onChange={(e) => setTempBalance(e.target.value)}
+                            className="w-full pl-10 pr-4 py-3 border-2 border-slate-200 rounded-xl text-xl font-bold text-slate-800 focus:border-blue-500 focus:outline-none"
+                            placeholder="0"
+                        />
+                    </div>
+
+                    <button 
+                        onClick={handleSaveBalance}
+                        className="w-full max-w-xs py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition-colors"
+                    >
+                        Simpan Saldo
+                    </button>
+                </div>
+             </div>
+        );
+    }
+
+    if (viewMode === 'create_date') {
+        return (
+             <div className="flex flex-col h-full bg-slate-50">
+                <div className="p-4 bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm flex justify-between items-center">
+                    <h2 className="font-bold text-lg text-slate-800">Pilih Tanggal Laporan</h2>
+                    <button onClick={() => setViewMode('list')} className="text-sm text-slate-500 font-bold">Kembali</button>
+                </div>
+
+                <div className="p-6 flex flex-col items-center justify-center flex-1">
+                    <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mb-6 text-emerald-600">
+                        <Calendar size={32} />
+                    </div>
+                    
+                    <p className="text-sm text-slate-500 text-center mb-6 max-w-xs">
+                        Pilih tanggal untuk membuat laporan baru (jika lupa input) atau mengedit laporan yang sudah ada.
+                    </p>
+
+                    <div className="w-full max-w-xs mb-6">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tanggal</label>
+                        <input 
+                            type="date"
+                            value={newLogDate}
+                            onChange={(e) => setNewLogDate(e.target.value)}
+                            className="w-full p-3 border-2 border-slate-200 rounded-xl text-lg font-bold text-slate-800 focus:border-emerald-500 focus:outline-none"
+                        />
+                    </div>
+
+                    <button 
+                        onClick={handleCreateLogCheck}
+                        disabled={!newLogDate}
+                        className="w-full max-w-xs py-3 bg-emerald-600 text-white font-bold rounded-xl shadow-lg hover:bg-emerald-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
+                    >
+                        Lanjut ke Form
+                    </button>
+                </div>
+             </div>
+        );
+    }
+
     if (viewMode === 'edit' && editLog) {
         return (
             <AdminEditor 
@@ -1789,6 +2013,20 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, onDeleteLog, 
                     className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-700 shadow-lg"
                 >
                     <KeyRound size={18} /> Manajemen Password Warga
+                </button>
+
+                <button 
+                    onClick={() => setViewMode('financial')}
+                    className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 shadow-lg"
+                >
+                    <Wallet size={18} /> Atur Saldo Awal (Kas Lama)
+                </button>
+
+                <button 
+                    onClick={() => setViewMode('create_date')}
+                    className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 shadow-lg"
+                >
+                    <Calendar size={18} /> Tambah/Edit Laporan Manual
                 </button>
             </div>
 
@@ -1975,23 +2213,6 @@ function AdminEditor({ log, onSave, onCancel }) {
         // Calculate auto missed houses (standard logic)
         const autoMissed = HOUSES.filter(h => (!data[h.id] || data[h.id] === 0) && !prepaid[h.id]).map(h => h.name);
         
-        // Merge with manual missed to ensure consistency if Admin forced it
-        // Logic: use autoMissed as base, but ensure manualMissed names are present if count is 0
-        // Actually, easiest is to trust the data inputs for entries. 
-        // But for the "Rollback" case (Pak Handi), we explicitly want him in missedHouses even if he paid 0 (which is default).
-        // The issue is auto calculation works fine for *current* day entries.
-        // The problem is when we want to restore missed status that was CLEARED.
-        // So we just need to ensure `missedHouses` includes what we expect.
-        
-        // If we manually added someone to manualMissed (via removeLatePaymentStatus), they should be in the final list.
-        // autoMissed already covers everyone with 0 payment. 
-        // So simply recalculating based on `data` is correct for the current day state.
-        
-        // HOWEVER, the `latePayments` state is the key. By removing `latePayments` and saving,
-        // the calendar will stop showing Yellow. And since payment is 0, autoMissed will include them.
-        // So `manualMissed` state is technically redundant if we just rely on `data=0`, 
-        // BUT we must ensure `latePayments` is updated in the final object.
-
         const updatedLog = {
             ...log,
             officers: cleanOfficers,
@@ -2010,7 +2231,10 @@ function AdminEditor({ log, onSave, onCancel }) {
     return (
         <div className="flex flex-col h-full bg-slate-50">
             <div className="p-4 bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm flex justify-between items-center">
-                <h2 className="font-bold text-lg text-slate-800">Edit Data</h2>
+                <div>
+                    <h2 className="font-bold text-lg text-slate-800">Edit Data</h2>
+                    <p className="text-xs text-slate-500 font-semibold">{new Date(log.date).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                </div>
                 <button onClick={onCancel} className="text-sm text-rose-500 font-bold">Batal</button>
             </div>
 
