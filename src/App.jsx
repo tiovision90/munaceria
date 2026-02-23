@@ -600,6 +600,7 @@ export default function App() {
                 onSave={savePatrol}
                 onCancel={() => setView('dashboard')}
                 todayStr={todayStr}
+                logs={logs}
               />
             )}
 
@@ -840,7 +841,6 @@ function LoginPage({ onCheckIn, onAdmin, allResidents, passwords, showToast }) {
 function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, financialConfig }) {
   const todayLog = logs.find(l => l.date === todayStr);
   const todayIncome = todayLog?.totalAmount || 0;
-  // Get details or fallback to 0
   const details = todayLog?.details || { patrol: 0, debt: 0, prepaid: 0 };
   
   const isPatrolDone = logs.some(l => l.date === todayStr);
@@ -865,7 +865,6 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
     return currentNames.some(name => reportNames.includes(name));
   }, [activeReport, officers]);
 
-  // Calculate Totals for Saldo
   const totalCollectedAllTime = useMemo(() => {
       return logs.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
   }, [logs]);
@@ -873,10 +872,7 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
   const initialBalance = financialConfig?.initialBalance || 0;
   const grandTotal = totalCollectedAllTime + initialBalance;
 
-  // Calculate patrol days for the current month
-  // FIX: Only count days up to today to prevent future prepaid logs from inflating the target
   const patrolDays = useMemo(() => {
-      // FIX: Use simple string comparison for date to be consistent with local todayStr
       return monthlyLogs.filter(l => 
           l.date <= todayStr && 
           l.officers && 
@@ -884,42 +880,30 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
       ).length;
   }, [monthlyLogs, todayStr]);
 
-  // --- LOGIKA BARU: Hitung Top 5 Penunggak (Financial Based) ---
   const topDebtors = useMemo(() => {
     if (monthlyLogs.length === 0 || patrolDays === 0) return [];
 
-    // Target Murni Berdasarkan Hari Patroli
     const targetAmount = patrolDays * JIMPITAN_VALUE; 
 
-    // 2. Inisialisasi map pembayaran per warga
     const residentPaymentMap = {};
     HOUSES.forEach(h => {
-        // paid: Total uang masuk
-        // prepaidDays: Jumlah hari yang ditandai sebagai prepaid (untuk mengurangi target)
         residentPaymentMap[h.id] = { name: h.name, paid: 0, prepaidDays: 0 };
     });
 
-    // 3. Akumulasi pembayaran & prepaid days dari logs bulan ini
     monthlyLogs.forEach(log => {
-        // Cek apakah log ini termasuk dalam hitungan patrolDays (<= hari ini)
         const isCountedDay = log.date <= todayStr && log.officers && log.officers.length > 0;
 
         HOUSES.forEach(h => {
             let count = 0;
-            // Cek entries (Uang Masuk)
             if (log.entries) {
                 if (typeof log.entries[h.id] === 'number') count = log.entries[h.id];
                 else if (typeof log.entries[h.id] === 'boolean') count = log.entries[h.id] ? 1 : 0;
             }
             
-            // Hitung Uang Masuk (Apapun tanggalnya, uang masuk tetap dihitung)
             if (count > 0) {
                 residentPaymentMap[h.id].paid += (count * JIMPITAN_VALUE);
             }
 
-            // Hitung Kompensasi Target (Prepaid)
-            // Jika hari ini dihitung sebagai target (patrol day), TAPI warga ini prepaid,
-            // maka target dia untuk hari ini harus dianggap lunas (dikurangi dari target global).
             const isPrepaid = log.prepaid && log.prepaid[h.id];
             if (isCountedDay && isPrepaid) {
                 residentPaymentMap[h.id].prepaidDays += 1;
@@ -927,8 +911,6 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
         });
     });
 
-    // 4. Hitung hutang
-    // Hutang = (Target Global - Kompensasi Prepaid) - Uang Masuk
     const debtors = [];
     Object.values(residentPaymentMap).forEach(r => {
         const individualTarget = targetAmount - (r.prepaidDays * JIMPITAN_VALUE);
@@ -943,7 +925,6 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
         }
     });
 
-    // 5. Sort terbanyak dan ambil top 5
     return debtors.sort((a, b) => b.debt - a.debt).slice(0, 5);
 
   }, [monthlyLogs, patrolDays, todayStr]);
@@ -1057,7 +1038,7 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
                   Rp {monthlyIncome.toLocaleString('id-ID')}
               </div>
                <div className="text-[10px] sm:text-xs text-slate-400 mt-1">
-                  Total terkumpul
+                 Total terkumpul
               </div>
             </div>
         </div>
@@ -1164,7 +1145,7 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
   );
 }
 
-function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onSave, onCancel, todayStr }) {
+function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onSave, onCancel, todayStr, logs }) {
   const currentTotal = Object.values(data).reduce((sum, count) => sum + (count * 500), 0);
 
   const residentsByGang = useMemo(() => {
@@ -1175,6 +1156,65 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
     });
     return grouped;
   }, [houses]);
+
+  // Menghitung jumlah hutang berdasarkan kalkulasi finansial Rekap Bulan Ini HINGGA KEMARIN
+  // Sehingga akurat 100% dengan Rekap Keuangan Warga
+  const baseDebtMap = useMemo(() => {
+    const map = {};
+    houses.forEach(h => {
+        map[h.id] = { paidCount: 0, prepaidDays: 0 };
+    });
+
+    const currentMonth = new Date(todayStr).getMonth();
+    const currentYear = new Date(todayStr).getFullYear();
+
+    // Hanya ambil log bulan ini sebelum hari H (masa lalu)
+    const pastMonthlyLogs = (logs || []).filter(l => {
+        const d = new Date(l.date);
+        return d.getMonth() === currentMonth && 
+               d.getFullYear() === currentYear && 
+               l.date < todayStr;
+    });
+
+    let pastPatrolDays = 0;
+
+    pastMonthlyLogs.forEach(log => {
+        const isPatrolDay = log.officers && log.officers.length > 0;
+        if (isPatrolDay) {
+            pastPatrolDays++;
+        }
+
+        houses.forEach(h => {
+            let count = 0;
+            if (log.entries) {
+                if (typeof log.entries[h.id] === 'number') count = log.entries[h.id];
+                else if (typeof log.entries[h.id] === 'boolean') count = log.entries[h.id] ? 1 : 0;
+            }
+            
+            // Hitung koin masuk
+            if (count > 0) {
+                map[h.id].paidCount += count;
+            }
+
+            // Hitung kompensasi prepaid
+            if (isPatrolDay && log.prepaid && log.prepaid[h.id]) {
+                map[h.id].prepaidDays += 1;
+            }
+        });
+    });
+
+    const debtMap = {};
+    houses.forEach(h => {
+        const r = map[h.id];
+        // Target individu = Target hari - Prepaid yang berlaku
+        const individualTargetCount = pastPatrolDays - r.prepaidDays;
+        // Hutang = Target - Uang Koin Masuk
+        const debtCount = individualTargetCount - r.paidCount;
+        debtMap[h.id] = debtCount > 0 ? debtCount : 0;
+    });
+
+    return debtMap;
+  }, [logs, todayStr, houses]);
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
@@ -1211,6 +1251,11 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
                     const isPaid = count > 0;
                     const isPrepaid = prepaid[house.id];
 
+                    // Kalkulasi status hutang dinamis saat tombol plus ditekan
+                    const baseDebt = baseDebtMap[house.id] || 0;
+                    const paidDebt = Math.max(0, count - 1); // 1 koin pertama untuk hari ini, sisanya untuk hutang
+                    const remainingDebt = Math.max(0, baseDebt - paidDebt);
+
                     return (
                         <div key={house.id} className={`flex items-center justify-between p-3 rounded-xl border transition-all select-none ${isPrepaid ? 'bg-blue-50 border-blue-300' : isPaid ? 'bg-white border-emerald-500 shadow-md shadow-emerald-100' : 'bg-slate-100 border-transparent opacity-75 hover:opacity-100 hover:bg-white hover:border-slate-300'}`}>
                         <div 
@@ -1237,10 +1282,22 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
 
                         {!isPrepaid && (
                             <div className="flex items-center gap-2">
+                                {/* INFO HUTANG / KEKURANGAN */}
+                                {baseDebt > 0 && remainingDebt > 0 && (
+                                    <div className="flex items-center justify-center px-2 py-1 bg-rose-50 border border-rose-200 rounded-lg text-[10px] font-bold text-rose-600 shadow-sm animate-pulse mr-1 whitespace-nowrap">
+                                        Kurang {remainingDebt}x
+                                    </div>
+                                )}
+                                {baseDebt > 0 && remainingDebt === 0 && (
+                                    <div className="flex items-center justify-center px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-[10px] font-bold text-emerald-600 shadow-sm mr-1 whitespace-nowrap">
+                                        Lunas ✅
+                                    </div>
+                                )}
+
                                 {count > 0 && (
                                     <button 
                                         onClick={() => onUpdateCount(house.id, -1)}
-                                        className="w-8 h-8 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center border border-rose-200 active:scale-95 transition-transform"
+                                        className="w-8 h-8 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center border border-rose-200 active:scale-95 transition-transform shrink-0"
                                     >
                                         <Minus size={16} />
                                     </button>
@@ -1248,7 +1305,7 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
                                 
                                 <div 
                                     onClick={() => onUpdateCount(house.id, 1)}
-                                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
                                         count > 1 ? 'bg-blue-500 text-white shadow-lg shadow-blue-200' :
                                         count === 1 ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200' : 
                                         'bg-slate-300 text-white'
@@ -1280,7 +1337,6 @@ function ReportScreen({ logs, onBack, showToast }) {
   const [selectedMonthKey, setSelectedMonthKey] = useState('');
   const [selectedResident, setSelectedResident] = useState(null); 
   
-  // NEW: State for expanding months in history
   const [expandedMonths, setExpandedMonths] = useState({});
 
   const stats = useMemo(() => {
@@ -1288,7 +1344,6 @@ function ReportScreen({ logs, onBack, showToast }) {
 
     const sortedLogs = [...logs].sort((a, b) => new Date(b.date) - new Date(a.date));
     
-    // FIX: Gunakan string tanggal lokal untuk perbandingan, bukan ISO/UTC.
     const todayStr = getLocalTodayStr();
 
     sortedLogs.forEach(log => {
@@ -1310,14 +1365,12 @@ function ReportScreen({ logs, onBack, showToast }) {
                     paidAmount: 0,
                     debtAmount: 0,
                     extraAmount: 0,
-                    prepaidDays: 0 // New Field to track prepaid compensation
+                    prepaidDays: 0
                 };
                 monthlyData[monthKey].officerStats[h.name] = 0;
             });
         }
 
-        // FIX: Hanya hitung hari sebagai target jika tanggalnya <= HARI INI
-        // Ini mencegah log "Masa Depan" (akibat prepaid) menaikkan target setoran
         const isCountedDay = log.date <= todayStr && log.officers && log.officers.length > 0;
         
         if (isCountedDay) {
@@ -1337,13 +1390,11 @@ function ReportScreen({ logs, onBack, showToast }) {
 
                 const rStats = monthlyData[monthKey].residents[h.id];
                 
-                // Hitung Uang Masuk
                 if (count > 0) {
                     rStats.paidAmount += (count * JIMPITAN_VALUE);
                     monthlyData[monthKey].totalCollected += (count * JIMPITAN_VALUE);
                 } 
                 
-                // Hitung Kompensasi Prepaid
                 const isPrepaid = log.prepaid && log.prepaid[h.id];
                 if (isCountedDay && isPrepaid) {
                     rStats.prepaidDays += 1;
@@ -1368,7 +1419,6 @@ function ReportScreen({ logs, onBack, showToast }) {
         HOUSES.forEach(h => {
             const r = m.residents[h.id];
             
-            // LOGIKA BARU: Target Individu = Target Global - Kompensasi Prepaid
             const individualTarget = globalTarget - (r.prepaidDays * JIMPITAN_VALUE);
             
             const diff = r.paidAmount - individualTarget;
@@ -1387,10 +1437,8 @@ function ReportScreen({ logs, onBack, showToast }) {
     return { monthlyData, monthKeys };
   }, [logs]);
 
-  // NEW: Group logs for history by month
   const historyGroups = useMemo(() => {
     const groups = {};
-    // Sort logs desc first
     const sortedLogs = [...logs].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     sortedLogs.forEach(log => {
@@ -1413,7 +1461,6 @@ function ReportScreen({ logs, onBack, showToast }) {
     }
   }, [stats.monthKeys, selectedMonthKey]);
 
-  // NEW: Auto-expand current month
   useEffect(() => {
       const currentMonthKey = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
       setExpandedMonths(prev => {
@@ -1522,7 +1569,6 @@ https://www.munaceria.online`;
             <h2 className="text-xl font-bold text-slate-800">Laporan & Data</h2>
         </div>
         
-        {/* Toggle Tabs */}
         <div className="flex bg-slate-100 p-1 rounded-xl w-full gap-1">
            <button 
              onClick={() => setActiveTab('history')}
@@ -1740,7 +1786,6 @@ function ResidentCalendarModal({ resident, monthKey, year, month, logs, onClose 
         
         if (log.prepaid && log.prepaid[resident.id]) return 'prepaid';
         
-        // Cek Pembayaran Telat (Hutang yang sudah dibayar)
         if (log.latePayments && log.latePayments[resident.id]) return 'late-paid';
 
         if (!log.officers || log.officers.length === 0) return 'no-data';
@@ -1788,7 +1833,7 @@ function ResidentCalendarModal({ resident, monthKey, year, month, logs, onClose 
                             if (status === 'missed') colorClass = "bg-rose-500 text-white shadow-sm shadow-rose-200";
                             if (status === 'double') colorClass = "bg-blue-500 text-white font-bold ring-2 ring-blue-200";
                             if (status === 'prepaid') colorClass = "bg-sky-400 text-white font-bold shadow-sm shadow-sky-200";
-                            if (status === 'late-paid') colorClass = "bg-yellow-400 text-white font-bold shadow-sm shadow-yellow-200"; // Tanda dibayar telat
+                            if (status === 'late-paid') colorClass = "bg-yellow-400 text-white font-bold shadow-sm shadow-yellow-200"; 
 
                             return (
                                 <div key={day} className={`h-10 rounded-lg flex flex-col items-center justify-center text-sm font-medium transition-transform hover:scale-110 ${colorClass}`}>
@@ -1862,7 +1907,6 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
             setEditLog(existing);
             showToast("Laporan tanggal tersebut sudah ada, membuka mode edit.", "info");
         } else {
-            // Template Log Baru
             setEditLog({
                 date: newLogDate,
                 officers: [],
@@ -1879,7 +1923,6 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
         setViewMode('edit');
     };
 
-    // Initialize temp balance when opening financial view
     useEffect(() => {
         if (viewMode === 'financial') {
             setTempBalance(financialConfig?.initialBalance || 0);
@@ -2055,7 +2098,6 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
                 ))}
             </div>
 
-            {/* --- CUSTOM DELETE MODAL --- */}
             {deletingLogId && (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
                     <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center animate-in zoom-in-95">
@@ -2153,11 +2195,9 @@ function PasswordManager({ currentPasswords, onSave, onBack, showToast }) {
 function AdminEditor({ log, onSave, onCancel }) {
     const [data, setData] = useState(log.entries || {});
     const [prepaid, setPrepaid] = useState(log.prepaid || {});
-    // Perbaikan Bug: Default ke array kosong jika officers null/undefined agar tidak error split
     const [officers, setOfficers] = useState((log.officers || []).join(', '));
     const [gang, setGang] = useState(log.officerGang || '-');
     const [note, setNote] = useState(log.note || '');
-    // Tambahan untuk Edit Manual Status
     const [latePayments, setLatePayments] = useState(log.latePayments || {});
     const [manualMissed, setManualMissed] = useState(log.missedHouses || []);
 
@@ -2192,13 +2232,11 @@ function AdminEditor({ log, onSave, onCancel }) {
         });
     };
 
-    // --- FITUR BARU: Hapus Status Late Payment (Kembalikan ke Hutang) ---
     const removeLatePaymentStatus = (houseId, houseName) => {
         const newLate = { ...latePayments };
         delete newLate[houseId];
         setLatePayments(newLate);
 
-        // Tambahkan ke Missed Houses agar terhitung hutang lagi
         if (!manualMissed.includes(houseName)) {
             setManualMissed([...manualMissed, houseName]);
         }
@@ -2207,10 +2245,8 @@ function AdminEditor({ log, onSave, onCancel }) {
     const handleSave = () => {
         const totalAmount = Object.values(data).reduce((sum, count) => sum + (count * JIMPITAN_VALUE), 0);
         
-        // Perbaikan Bug: Pastikan officers yang di-save tidak mengandung string kosong
         const cleanOfficers = officers.split(',').map(s => s.trim()).filter(s => s.length > 0);
 
-        // Calculate auto missed houses (standard logic)
         const autoMissed = HOUSES.filter(h => (!data[h.id] || data[h.id] === 0) && !prepaid[h.id]).map(h => h.name);
         
         const updatedLog = {
@@ -2220,8 +2256,8 @@ function AdminEditor({ log, onSave, onCancel }) {
             entries: data,
             prepaid: prepaid,
             totalAmount,
-            missedHouses: autoMissed, // Recalculate based on 0 entries
-            latePayments: latePayments, // Use the manually edited late payments
+            missedHouses: autoMissed,
+            latePayments: latePayments, 
             note
         };
         
@@ -2257,7 +2293,6 @@ function AdminEditor({ log, onSave, onCancel }) {
                     </div>
                 </div>
 
-                {/* --- BAGIAN BARU: STATUS PELUNASAN --- */}
                 {Object.keys(latePayments).length > 0 && (
                     <div className="bg-yellow-50 p-3 rounded-xl border border-yellow-200">
                         <label className="text-xs font-bold text-yellow-700 uppercase mb-2 block flex items-center gap-1">
