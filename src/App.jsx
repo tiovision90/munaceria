@@ -262,10 +262,14 @@ export default function App() {
           
           if (delta > 0) {
             const currentMonthPrefix = todayStr.substring(0, 7);
-            const unpaidPastLogs = logs.filter(l => 
-                  l.date < todayStr && 
-                  l.missedHouses && l.missedHouses.includes(HOUSES.find(h => h.id === houseId)?.name)
-              );
+            const unpaidPastLogs = logs.filter(l => {
+                if (l.date >= todayStr) return false;
+                if (!l.officers || l.officers.length === 0) return false;
+                const pCount = typeof l.entries?.[houseId] === 'number' ? l.entries[houseId] : (l.entries?.[houseId] ? 1 : 0);
+                const isPrep = l.prepaid?.[houseId];
+                const isLate = l.latePayments?.[houseId];
+                return pCount === 0 && !isPrep && !isLate;
+            });
 
             if (newVal > 1 && unpaidPastLogs.length > 0) {
                  const debtCount = unpaidPastLogs.length;
@@ -350,12 +354,19 @@ export default function App() {
                     
                     const log = processingLogs[i];
                     if (log.date >= todayStr) continue; // Jangan bayar hutang masa depan/hari ini
+                    if (!log.officers || log.officers.length === 0) continue; // Jangan bayar di hari libur (tanpa petugas)
 
-                    // Cek apakah warga ini punya hutang di tanggal tersebut
-                    if (log.missedHouses && log.missedHouses.includes(house.name)) {
+                    const pCount = typeof log.entries?.[house.id] === 'number' ? log.entries[house.id] : (log.entries?.[house.id] ? 1 : 0);
+                    const isPrep = log.prepaid?.[house.id];
+                    const isLate = log.latePayments?.[house.id];
+
+                    // Cek apakah warga ini punya hutang di tanggal tersebut berdasarkan data koin real (bukan sekadar daftar missedHouses)
+                    if (pCount === 0 && !isPrep && !isLate) {
                         // Lakukan Pelunasan:
-                        // 1. Hapus nama dari missedHouses
-                        log.missedHouses = log.missedHouses.filter(n => n !== house.name);
+                        // 1. Hapus nama dari missedHouses (jika ada) untuk merapikan histori WA
+                        if (log.missedHouses) {
+                            log.missedHouses = log.missedHouses.filter(n => n !== house.name);
+                        }
                         
                         // 2. Catat di latePayments
                         if (!log.latePayments) log.latePayments = {};
@@ -473,9 +484,25 @@ export default function App() {
     }
   };
 
+  // --- FUNGSI MENCATAT LOG ADMIN ---
+  const recordAdminLog = async (action, details) => {
+      if (!user) return;
+      try {
+          const id = Date.now().toString();
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'admin_logs', id), {
+              timestamp: new Date().toISOString(),
+              action,
+              details
+          });
+      } catch (e) {
+          console.error("Gagal mencatat log admin", e);
+      }
+  };
+
   const handleDeleteLog = async (logId) => {
       try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', logId));
+        await recordAdminLog('HAPUS_LAPORAN', `Menghapus laporan tanggal ${logId}`);
         showToast("Data berhasil dihapus", "success");
       } catch (e) {
         console.error(e);
@@ -486,6 +513,7 @@ export default function App() {
   const handleUpdateLog = async (updatedLog) => {
       try {
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', updatedLog.date), updatedLog, { merge: true });
+        await recordAdminLog('UBAH_LAPORAN', `Menambah/mengubah laporan manual tanggal ${updatedLog.date}`);
         showToast('Perubahan berhasil disimpan!', 'success');
       } catch (e) {
         console.error(e);
@@ -496,6 +524,7 @@ export default function App() {
   const handleSavePasswords = async (newPasswords) => {
       try {
           await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'passwords'), newPasswords);
+          await recordAdminLog('UBAH_PASSWORD', `Memperbarui data password warga`);
           showToast('Password berhasil diperbarui!', 'success');
       } catch (e) {
           console.error(e);
@@ -506,6 +535,7 @@ export default function App() {
   const handleUpdateFinancials = async (newVal) => {
       try {
           await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'financials'), { initialBalance: parseInt(newVal) || 0 }, { merge: true });
+          await recordAdminLog('UBAH_SALDO', `Mengubah saldo awal kas menjadi Rp ${newVal}`);
           showToast('Saldo awal diperbarui!', 'success');
       } catch (e) {
           console.error(e);
@@ -843,7 +873,8 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
   const todayIncome = todayLog?.totalAmount || 0;
   const details = todayLog?.details || { patrol: 0, debt: 0, prepaid: 0 };
   
-  const isPatrolDone = logs.some(l => l.date === todayStr);
+  // PERBAIKAN: Patroli dianggap selesai HANYA JIKA sudah ada petugas yang tercatat di hari tersebut
+  const isPatrolDone = logs.some(l => l.date === todayStr && l.officers && l.officers.length > 0);
   
   const currentMonth = new Date(todayStr).getMonth();
   const currentYear = new Date(todayStr).getFullYear();
@@ -1868,6 +1899,18 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
     const [deletingLogId, setDeletingLogId] = useState(null);
     const [tempBalance, setTempBalance] = useState('');
     const [newLogDate, setNewLogDate] = useState('');
+    const [adminLogs, setAdminLogs] = useState([]); // TAMBAHAN STATE
+
+    // Ambil data riwayat log saat masuk panel admin
+    useEffect(() => {
+        if (!auth) return;
+        const q = collection(db, 'artifacts', appId, 'public', 'data', 'admin_logs');
+        const unsub = onSnapshot(q, (snap) => {
+            const fetchedLogs = snap.docs.map(d => d.data()).sort((a,b) => b.timestamp.localeCompare(a.timestamp));
+            setAdminLogs(fetchedLogs);
+        }, (err) => console.error(err));
+        return () => unsub();
+    }, [auth]);
 
     const checkAuth = (e) => {
         e.preventDefault();
@@ -2043,6 +2086,32 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
         );
     }
 
+    if (viewMode === 'logs') {
+        return (
+            <div className="flex flex-col h-full bg-slate-50">
+                <div className="p-4 bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm flex justify-between items-center">
+                    <h2 className="font-bold text-lg text-slate-800">Riwayat Aktivitas Admin</h2>
+                    <button onClick={() => setViewMode('list')} className="text-sm text-slate-500 font-bold">Kembali</button>
+                </div>
+                <div className="p-4 space-y-3 overflow-y-auto pb-20">
+                    {adminLogs.length === 0 ? (
+                        <p className="text-center text-slate-400 py-10 text-sm">Belum ada riwayat aktivitas.</p>
+                    ) : (
+                        adminLogs.map((log, i) => (
+                            <div key={i} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm animate-in fade-in slide-in-from-bottom-2">
+                                <div className="flex justify-between items-start mb-1">
+                                    <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">{log.action}</span>
+                                    <span className="text-[10px] text-slate-400">{new Date(log.timestamp).toLocaleString('id-ID')}</span>
+                                </div>
+                                <p className="text-sm text-slate-700 mt-1">{log.details}</p>
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="p-4 flex flex-col h-full bg-slate-50 relative">
             <div className="flex items-center gap-2 mb-6">
@@ -2070,6 +2139,13 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
                     className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 shadow-lg"
                 >
                     <Calendar size={18} /> Tambah/Edit Laporan Manual
+                </button>
+
+                <button 
+                    onClick={() => setViewMode('logs')}
+                    className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 shadow-lg"
+                >
+                    <History size={18} /> Riwayat Aktivitas Admin
                 </button>
             </div>
 
@@ -2199,7 +2275,6 @@ function AdminEditor({ log, onSave, onCancel }) {
     const [gang, setGang] = useState(log.officerGang || '-');
     const [note, setNote] = useState(log.note || '');
     const [latePayments, setLatePayments] = useState(log.latePayments || {});
-    const [manualMissed, setManualMissed] = useState(log.missedHouses || []);
 
     const residentsByGang = useMemo(() => {
         const grouped = {};
@@ -2211,7 +2286,7 @@ function AdminEditor({ log, onSave, onCancel }) {
     }, []);
 
     const updateCount = (houseId, delta) => {
-        if (prepaid[houseId]) return;
+        if (prepaid[houseId] || latePayments[houseId]) return;
 
         setData(prev => {
             const currentVal = prev[houseId] || 0;
@@ -2227,27 +2302,47 @@ function AdminEditor({ log, onSave, onCancel }) {
             
             if (newVal) {
                 setData(prevData => ({ ...prevData, [houseId]: 0 }));
+                setLatePayments(prevLate => {
+                    const newLate = { ...prevLate };
+                    delete newLate[houseId];
+                    return newLate;
+                });
             }
             return nextPrepaid;
         });
     };
 
-    const removeLatePaymentStatus = (houseId, houseName) => {
-        const newLate = { ...latePayments };
-        delete newLate[houseId];
-        setLatePayments(newLate);
-
-        if (!manualMissed.includes(houseName)) {
-            setManualMissed([...manualMissed, houseName]);
-        }
+    const toggleLatePayment = (houseId) => {
+        setLatePayments(prev => {
+            const newLate = { ...prev };
+            if (newLate[houseId]) {
+                delete newLate[houseId];
+            } else {
+                newLate[houseId] = new Date().toISOString().split('T')[0];
+                setData(prevData => ({ ...prevData, [houseId]: 0 }));
+                setPrepaid(prevPrep => {
+                    const newPrep = { ...prevPrep };
+                    delete newPrep[houseId];
+                    return newPrep;
+                });
+            }
+            return newLate;
+        });
     };
 
     const handleSave = () => {
         const totalAmount = Object.values(data).reduce((sum, count) => sum + (count * JIMPITAN_VALUE), 0);
         
+        // Perbaikan Bug: Pastikan officers yang di-save tidak mengandung string kosong
         const cleanOfficers = officers.split(',').map(s => s.trim()).filter(s => s.length > 0);
 
-        const autoMissed = HOUSES.filter(h => (!data[h.id] || data[h.id] === 0) && !prepaid[h.id]).map(h => h.name);
+        // Calculate auto missed houses (standard logic)
+        const autoMissed = HOUSES.filter(h => {
+            const count = typeof data[h.id] === 'number' ? data[h.id] : (data[h.id] ? 1 : 0);
+            const isPrep = prepaid[h.id];
+            const isLate = latePayments[h.id];
+            return count === 0 && !isPrep && !isLate;
+        }).map(h => h.name);
         
         const updatedLog = {
             ...log,
@@ -2293,45 +2388,18 @@ function AdminEditor({ log, onSave, onCancel }) {
                     </div>
                 </div>
 
-                {Object.keys(latePayments).length > 0 && (
-                    <div className="bg-yellow-50 p-3 rounded-xl border border-yellow-200">
-                        <label className="text-xs font-bold text-yellow-700 uppercase mb-2 block flex items-center gap-1">
-                            <Undo2 size={12}/> Status Pembayaran Telat (Lunas)
-                        </label>
-                        <p className="text-[10px] text-yellow-600 mb-2">
-                            Jika ada warga yang tercatat lunas padahal belum bayar, hapus dari daftar ini.
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                            {Object.keys(latePayments).map(hid => {
-                                const hName = HOUSES.find(h => h.id === hid)?.name || hid;
-                                return (
-                                    <div key={hid} className="flex items-center gap-1 bg-white px-2 py-1 rounded text-xs border border-yellow-300 shadow-sm">
-                                        <span className="font-bold text-slate-700">{hName}</span>
-                                        <button 
-                                            onClick={() => removeLatePaymentStatus(hid, hName)}
-                                            className="ml-1 text-rose-500 hover:bg-rose-100 rounded-full p-0.5"
-                                            title="Batalkan Status Lunas"
-                                        >
-                                            <X size={12} />
-                                        </button>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
-
                 {Object.entries(residentsByGang).map(([gangName, residents]) => (
                     <div key={gangName} className="space-y-2">
                         <h3 className="text-xs font-bold text-slate-400 uppercase ml-1">{gangName}</h3>
                         {residents.map((house) => {
                             const count = data[house.id] || 0;
                             const isPrepaid = prepaid[house.id];
+                            const isLate = !!latePayments[house.id];
                             
                             return (
-                                <div key={house.id} className={`flex items-center justify-between p-2 rounded-lg border bg-white ${isPrepaid ? 'border-sky-400 bg-sky-50' : count > 0 ? 'border-emerald-500' : 'border-slate-200'}`}>
+                                <div key={house.id} className={`flex items-center justify-between p-2 rounded-lg border bg-white ${isPrepaid ? 'border-sky-400 bg-sky-50' : isLate ? 'border-yellow-400 bg-yellow-50' : count > 0 ? 'border-emerald-500' : 'border-slate-200'}`}>
                                     <span className="text-sm font-medium text-slate-700">{house.name}</span>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-1">
                                         <button 
                                             onClick={() => togglePrepaid(house.id)}
                                             className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold border transition-colors ${isPrepaid ? 'bg-sky-500 text-white border-sky-600' : 'bg-slate-100 text-slate-400 border-slate-300'}`}
@@ -2339,8 +2407,15 @@ function AdminEditor({ log, onSave, onCancel }) {
                                         >
                                             P
                                         </button>
+                                        <button 
+                                            onClick={() => toggleLatePayment(house.id)}
+                                            className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold border transition-colors ${isLate ? 'bg-yellow-400 text-white border-yellow-500' : 'bg-slate-100 text-slate-400 border-slate-300'}`}
+                                            title="Set Pelunasan Manual"
+                                        >
+                                            L
+                                        </button>
 
-                                        {!isPrepaid && (
+                                        {!isPrepaid && !isLate && (
                                             <>
                                                 {count > 0 && <button onClick={() => updateCount(house.id, -1)} className="w-6 h-6 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center"><Minus size={12}/></button>}
                                                 <span className={`text-sm font-bold w-6 text-center ${count > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{count}</span>
@@ -2348,6 +2423,7 @@ function AdminEditor({ log, onSave, onCancel }) {
                                             </>
                                         )}
                                         {isPrepaid && <span className="text-xs font-bold text-sky-600 px-2">Prepaid</span>}
+                                        {isLate && <span className="text-xs font-bold text-yellow-600 px-2">Lunas</span>}
                                     </div>
                                 </div>
                             );
