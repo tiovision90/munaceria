@@ -543,6 +543,18 @@ export default function App() {
       }
   };
 
+  const handleToggleDeposit = async (log) => {
+      try {
+          const newStatus = !log.isDeposited;
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', log.date), { isDeposited: newStatus }, { merge: true });
+          await recordAdminLog('UBAH_STATUS_SETOR', `Mengubah status setor uang tanggal ${log.date} menjadi ${newStatus ? 'Sudah Diterima' : 'Belum Diterima'}`);
+          showToast(`Status setor diperbarui!`, 'success');
+      } catch (e) {
+          console.error(e);
+          showToast("Gagal mengubah status setor", "error");
+      }
+  };
+
   if (loading) return (
       <div className="flex flex-col h-screen items-center justify-center bg-slate-900 text-white animate-pulse">
           <div className="mb-4 text-emerald-500 font-bold text-xl">Muna Permai 2</div>
@@ -616,6 +628,7 @@ export default function App() {
                 todayStr={todayStr}
                 showToast={showToast}
                 financialConfig={financialConfig}
+                onToggleDeposit={handleToggleDeposit}
               />
             )}
 
@@ -655,6 +668,7 @@ export default function App() {
             onUpdateFinancials={handleUpdateFinancials}
             onDeleteLog={handleDeleteLog}
             onUpdateLog={handleUpdateLog}
+            onToggleDeposit={handleToggleDeposit}
             showToast={showToast}
         />
       )}
@@ -868,7 +882,7 @@ function LoginPage({ onCheckIn, onAdmin, allResidents, passwords, showToast }) {
   );
 }
 
-function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, financialConfig }) {
+function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, financialConfig, onToggleDeposit }) {
   const todayLog = logs.find(l => l.date === todayStr);
   const todayIncome = todayLog?.totalAmount || 0;
   const details = todayLog?.details || { patrol: 0, debt: 0, prepaid: 0 };
@@ -883,6 +897,11 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
     return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
   });
   const monthlyIncome = monthlyLogs.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+
+  // --- MENGHITUNG STATUS SETOR BULAN INI ---
+  const monthlyPatrolDays = monthlyLogs.filter(l => l.officers && l.officers.length > 0);
+  const depositedCount = monthlyPatrolDays.filter(l => l.isDeposited).length;
+  const undepositedCount = monthlyPatrolDays.filter(l => !l.isDeposited).length;
 
   const dateOptions = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
   const displayDate = new Date(todayStr).toLocaleDateString('id-ID', dateOptions);
@@ -1001,11 +1020,24 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 shadow-sm animate-in slide-in-from-top-2">
              <div className="flex items-start gap-3">
                 <Info className="text-amber-500 shrink-0" size={20} />
-                <div>
+                <div className="flex-1">
                    <h3 className="font-bold text-amber-800 text-sm">Laporan Hari Ini Sedang Aktif</h3>
                    <p className="text-xs text-amber-600 mt-1">
                       Laporan dibuat oleh: <span className="font-semibold text-amber-700">{activeReport.officers.join(', ')}</span>.
                    </p>
+                   
+                   <button 
+                       onClick={() => isAuthorized ? onToggleDeposit(activeReport) : showToast("Hanya petugas patroli ini yang dapat mengonfirmasi setor.", "error")}
+                       className={`mt-3 flex w-full justify-center items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-bold border transition-all active:scale-95 ${
+                           activeReport.isDeposited 
+                           ? 'bg-emerald-100 text-emerald-700 border-emerald-300 hover:bg-emerald-200' 
+                           : 'bg-rose-500 text-white border-rose-600 hover:bg-rose-600 shadow-md shadow-rose-200'
+                       } ${!isAuthorized && 'opacity-60 cursor-not-allowed'}`}
+                   >
+                       {activeReport.isDeposited ? <CheckCircle size={16}/> : <Wallet size={16}/>}
+                       {activeReport.isDeposited ? '✅ Uang Telah Disetor ke Bendahara' : 'Konfirmasi Uang Telah Disetor'}
+                   </button>
+
                    {!isAuthorized && (
                        <p className="text-[10px] text-rose-500 mt-2 font-bold italic">
                           Anda tidak memiliki akses untuk mengedit laporan ini karena petugas berbeda.
@@ -1068,9 +1100,21 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
               <div className="text-lg sm:text-xl font-bold text-slate-800 break-words leading-tight">
                   Rp {monthlyIncome.toLocaleString('id-ID')}
               </div>
-               <div className="text-[10px] sm:text-xs text-slate-400 mt-1">
+               <div className="text-[10px] sm:text-xs text-slate-400 mt-1 pb-1">
                  Total terkumpul
               </div>
+
+              <div className="mt-1 space-y-1 border-t border-slate-100 pt-1 w-full">
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                      <span>Sudah Disetor:</span>
+                      <span className="font-semibold text-emerald-600">{depositedCount}x</span>
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                      <span>Belum Disetor:</span>
+                      <span className="font-semibold text-rose-500">{undepositedCount}x</span>
+                  </div>
+              </div>
+
             </div>
         </div>
       </div>
@@ -1549,6 +1593,7 @@ function ReportScreen({ logs, onBack, showToast }) {
 📍 Dari: ${gangName || '-'}
 
 💰 Total Perolehan: *${fmtMoney(log.totalAmount || 0)}*
+🏦 Status Uang: *${log.isDeposited ? '✅ Sudah Disetor' : '⏳ Belum Disetor'}*
 
 Dengan rincian :
 Patroli : *${fmtMoney(details.patrol || 0)}*
@@ -1762,8 +1807,12 @@ https://www.munaceria.online`;
                                             </div>
                                             
                                             <div className="p-4">
-                                                <div className="flex justify-between text-xs text-slate-500 mb-2">
-                                                <span>Petugas: {(log.officers || []).join(', ')}</span>
+                                                <div className="flex justify-between items-center text-xs text-slate-500 mb-2">
+                                                    <span>Petugas: {(log.officers || []).join(', ')}</span>
+                                                    <span className={`px-2 py-0.5 rounded flex items-center gap-1 font-bold ${log.isDeposited ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-600'}`}>
+                                                        {log.isDeposited ? <CheckCircle size={10} /> : <Clock size={10} />}
+                                                        {log.isDeposited ? 'Uang Disetor' : 'Belum Setor'}
+                                                    </span>
                                                 </div>
                                                 
                                                 {log.note && (
@@ -1891,7 +1940,7 @@ function ResidentCalendarModal({ resident, monthKey, year, month, logs, onClose 
     );
 }
 
-function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConfig, onUpdateFinancials, onDeleteLog, onUpdateLog, showToast }) {
+function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConfig, onUpdateFinancials, onDeleteLog, onUpdateLog, onToggleDeposit, showToast }) {
     const [auth, setAuth] = useState(false);
     const [pin, setPin] = useState('');
     const [editLog, setEditLog] = useState(null);
@@ -1959,7 +2008,8 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
                 totalAmount: 0,
                 missedHouses: [],
                 latePayments: {},
-                note: 'Input Manual Admin'
+                note: 'Input Manual Admin',
+                isDeposited: false
             });
             showToast("Membuat laporan baru untuk tanggal " + newLogDate, "success");
         }
@@ -2152,7 +2202,7 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
             <div className="space-y-3 overflow-y-auto">
                 <h3 className="font-bold text-slate-700 text-sm uppercase tracking-wide mb-2">Data Tersimpan</h3>
                 {logs.map(log => (
-                    <div key={log.date} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
+                    <div key={log.date} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                         <div>
                             <div className="font-bold text-slate-700 flex items-center gap-2">
                                 <Calendar size={14} className="text-emerald-500" />
@@ -2162,11 +2212,18 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
                                 {(log.officers || []).join(', ')} • Rp {(log.totalAmount || 0).toLocaleString()}
                             </div>
                         </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => { setEditLog(log); setViewMode('edit'); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100">
+                        <div className="flex gap-2 w-full sm:w-auto justify-end">
+                            <button 
+                                onClick={() => onToggleDeposit(log)}
+                                className={`px-3 py-2 flex items-center gap-1.5 rounded-lg text-xs font-bold transition-colors border flex-1 sm:flex-none justify-center ${log.isDeposited ? 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100'}`}
+                                title={log.isDeposited ? "Klik untuk membatalkan status setor" : "Klik untuk menandai uang sudah diterima"}
+                            >
+                                {log.isDeposited ? <><CheckCircle size={14} /> Diterima</> : <><Clock size={14} /> Belum Setor</>}
+                            </button>
+                            <button onClick={() => { setEditLog(log); setViewMode('edit'); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 border border-blue-200">
                                 <Edit size={16} />
                             </button>
-                            <button onClick={() => confirmDelete(log.date)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-100">
+                            <button onClick={() => confirmDelete(log.date)} className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-100 border border-rose-200">
                                 <Trash2 size={16} />
                             </button>
                         </div>
