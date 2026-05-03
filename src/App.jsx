@@ -44,7 +44,6 @@ try {
 
 const auth = getAuth(app);
 const db = getFirestore(app);
-// Using the hardcoded appId from your code to maintain path consistency
 const appId = 'munaceria'; 
 
 // --- HELPER: DATE UTILS ---
@@ -65,7 +64,7 @@ const addDays = (dateStr, days) => {
     return `${year}-${month}-${day}`;
 };
 
-// --- DATA WARGA MUNA PERMAI 2 ---
+// --- DATA BAWAAN WARGA (HANYA DIGUNAKAN JIKA DATABASE KOSONG) ---
 const RAW_DATA = {
   "Gang Arjuno": [
     "Pak Deni", "Pak Igna", "Pak Anif", "Pak Rois", "Pak Eko", 
@@ -105,19 +104,29 @@ const generateHouses = () => {
   return houses;
 };
 
-const HOUSES = generateHouses();
-const TOTAL_HOUSES = HOUSES.length;
+const DEFAULT_HOUSES = generateHouses();
 const JIMPITAN_VALUE = 500;
 
 // --- KOMPONEN UTAMA ---
 export default function App() {
   const [user, setUser] = useState(null);
-  const [view, setView] = useState('login'); 
+  
+  // Penanganan Inisialisasi View dengan Try-Catch untuk Keamanan Sandbox
+  const [view, setView] = useState(() => {
+      try {
+          return window.location.hash ? window.location.hash.replace('#', '') : 'login';
+      } catch (e) {
+          return 'login';
+      }
+  }); 
+  const [internalHistory, setInternalHistory] = useState([view]);
+
   const [lastView, setLastView] = useState('login');
   const [loading, setLoading] = useState(true);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
-  
+
   const [logs, setLogs] = useState([]);
+  const [houses, setHouses] = useState(DEFAULT_HOUSES); // State dinamis warga
   
   const [currentPatrolData, setCurrentPatrolData] = useState({});
   const [currentPrepaidData, setCurrentPrepaidData] = useState({});
@@ -148,6 +157,70 @@ export default function App() {
         window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // --- ROUTING / HARDWARE BACK BUTTON HANDLER ---
+  useEffect(() => {
+    const handlePopState = (e) => {
+        if (e.state && e.state.view) {
+            setView(e.state.view);
+            setInternalHistory(prev => {
+                const newHist = [...prev];
+                newHist.pop();
+                return newHist;
+            });
+        } else {
+            try {
+                const hash = window.location.hash.replace('#', '') || 'login';
+                setView(hash);
+            } catch (err) {
+                setView('login');
+            }
+        }
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    
+    // Set state awal
+    try {
+        if (!window.history.state) {
+            window.history.replaceState({ view: view }, '', `#${view}`);
+        }
+    } catch (e) {
+        // Abaikan jika terblokir oleh sandbox
+    }
+    
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateTo = (newView) => {
+      setView(newView);
+      setInternalHistory(prev => [...prev, newView]);
+      try {
+          window.history.pushState({ view: newView }, '', `#${newView}`);
+      } catch (e) {
+          // Abaikan jika sandbox Iframe memblokir History API
+      }
+  };
+
+  const navigateBack = (fallback) => {
+      setInternalHistory(prev => {
+          const newHistory = [...prev];
+          newHistory.pop();
+          return newHistory;
+      });
+      
+      try {
+          if (internalHistory.length > 1) {
+              window.history.back();
+          } else {
+              setView(fallback);
+              window.history.replaceState({ view: fallback }, '', `#${fallback}`);
+          }
+      } catch (e) {
+          // Fallback utama jika History API sama sekali tidak berfungsi
+          setView(fallback);
+      }
+  };
 
   // --- FIREBASE INIT & AUTH ---
   useEffect(() => {
@@ -180,8 +253,8 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     
+    // Logs
     const qLogs = collection(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs');
-    
     const unsubLogs = onSnapshot(qLogs, (snapshot) => {
       const loadedLogs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       loadedLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -193,6 +266,17 @@ export default function App() {
         setLoading(false);
     });
 
+    // Warga / Residents
+    const resRef = doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'residents');
+    const unsubRes = onSnapshot(resRef, (docSnap) => {
+        if (docSnap.exists() && docSnap.data().list) {
+            setHouses(docSnap.data().list);
+        } else {
+            setHouses(DEFAULT_HOUSES); // fallback
+        }
+    });
+
+    // Passwords
     const pwdRef = doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'passwords');
     const unsubPwd = onSnapshot(pwdRef, (docSnap) => {
         if (docSnap.exists()) {
@@ -202,7 +286,7 @@ export default function App() {
         }
     });
 
-    // Listener untuk Konfigurasi Keuangan (Saldo Awal)
+    // Financials
     const finRef = doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'financials');
     const unsubFin = onSnapshot(finRef, (docSnap) => {
         if (docSnap.exists()) {
@@ -214,6 +298,7 @@ export default function App() {
    
     return () => {
       unsubLogs();
+      unsubRes();
       unsubPwd();
       unsubFin();
     };
@@ -221,13 +306,13 @@ export default function App() {
 
   const handleCheckIn = (officersList) => {
     setCurrentOfficers(officersList);
-    setView('dashboard');
+    navigateTo('dashboard');
     showToast(`Selamat bertugas, ${officersList.map(o => o.name).join(' & ')}!`, "success");
   };
 
   const handleAdminClick = () => {
       setLastView(view);
-      setView('admin');
+      navigateTo('admin');
   };
 
   const startPatrol = () => {
@@ -237,20 +322,20 @@ export default function App() {
     let prepaidData = {};
 
     if (existingLog) {
-      HOUSES.forEach(h => {
+      houses.forEach(h => {
           const val = existingLog.entries[h.id];
           patrolData[h.id] = (typeof val === 'number') ? val : (val ? 1 : 0);
       });
       prepaidData = existingLog.prepaid || {};
       setCurrentPatrolNote(existingLog.note || "");
     } else {
-      HOUSES.forEach(h => patrolData[h.id] = 0);
+      houses.forEach(h => patrolData[h.id] = 0);
       setCurrentPatrolNote("");
     }
 
     setCurrentPatrolData(patrolData);
     setCurrentPrepaidData(prepaidData);
-    setView('patrol');
+    navigateTo('patrol');
   };
 
   const handleSmartPayment = (houseId, delta) => {
@@ -261,7 +346,6 @@ export default function App() {
           const newVal = Math.max(0, currentVal + delta);
           
           if (delta > 0) {
-            const currentMonthPrefix = todayStr.substring(0, 7);
             const unpaidPastLogs = logs.filter(l => {
                 if (l.date >= todayStr) return false;
                 if (!l.officers || l.officers.length === 0) return false;
@@ -292,19 +376,19 @@ export default function App() {
     if (!user) return;
 
     let finalOfficers = currentOfficers.map(o => o.name);
-    let finalGang = currentOfficers.length > 0 ? currentOfficers[0].gang : '-';
+    let finalGang = currentOfficers.length > 0 ? currentOfficers.gang : '-';
     
     const existingLog = logs.find(l => l.date === todayStr);
     if (existingLog && existingLog.officers && existingLog.officers.length > 0) {
         if (finalOfficers.length === 0) {
              finalOfficers = existingLog.officers;
-             finalGang = existingLog.officerGang;
+             finalGang = existingLog.officerGang || '-';
         }
     }
 
     if (finalOfficers.length === 0) {
         showToast("Error: Data Petugas Kosong. Silakan Login Ulang.", "error");
-        setView('login');
+        navigateTo('login');
         return;
     }
 
@@ -316,66 +400,52 @@ export default function App() {
     let debtDetailsArr = []; 
     let prepaidDetailsArr = []; 
 
-    // --- REVISI LOGIKA PENYIMPANAN YANG LEBIH ROBUST ---
-    // 1. Clone semua logs agar aman dimutasi
     let processingLogs = JSON.parse(JSON.stringify(logs));
     
-    // 2. Pastikan log hari ini ada di array (jika belum ada, buat baru)
     let todayLogIndex = processingLogs.findIndex(l => l.date === todayStr);
     if (todayLogIndex === -1) {
-        processingLogs.push({ date: todayStr, isModified: true }); // Flag baru
+        processingLogs.push({ date: todayStr, isModified: true }); 
     }
     
-    // 3. Sort berdasarkan tanggal (Oldest first) untuk prioritas pelunasan hutang lama
     processingLogs.sort((a, b) => a.date.localeCompare(b.date));
 
-    // 4. Hitung Missed Houses untuk hari ini (sebelum processing prepaid)
-    const missedHouses = HOUSES.filter(h => {
+    const missedHouses = houses.filter(h => {
         const count = currentPatrolData[h.id] || 0;
         const isPrepaid = currentPrepaidData[h.id];
         return count === 0 && !isPrepaid;
     }).map(h => h.name);
 
-    // 5. Proses Pembayaran (Patroli, Hutang, Prepaid)
-    HOUSES.forEach(house => {
+    houses.forEach(house => {
         const count = currentPatrolData[house.id] || 0;
         
         if (count > 0) {
-            sumPatrol += JIMPITAN_VALUE; // Pembayaran wajib hari ini (1x)
+            sumPatrol += JIMPITAN_VALUE; 
 
             if (count > 1) {
-                let credits = count - 1; // Sisa kredit untuk bayar hutang/prepaid
+                let credits = count - 1; 
                 let houseDebtPaid = 0;
                 let housePrepaidPaid = 0;
 
                 // A. Bayar Hutang (Iterasi log masa lalu)
                 for (let i = 0; i < processingLogs.length; i++) {
-                    if (credits <= 0) break; // Stop jika kredit habis
+                    if (credits <= 0) break; 
                     
                     const log = processingLogs[i];
-                    if (log.date >= todayStr) continue; // Jangan bayar hutang masa depan/hari ini
-                    if (!log.officers || log.officers.length === 0) continue; // Jangan bayar di hari libur (tanpa petugas)
+                    if (log.date >= todayStr) continue; 
+                    if (!log.officers || log.officers.length === 0) continue; 
 
                     const pCount = typeof log.entries?.[house.id] === 'number' ? log.entries[house.id] : (log.entries?.[house.id] ? 1 : 0);
                     const isPrep = log.prepaid?.[house.id];
                     const isLate = log.latePayments?.[house.id];
 
-                    // Cek apakah warga ini punya hutang di tanggal tersebut berdasarkan data koin real (bukan sekadar daftar missedHouses)
                     if (pCount === 0 && !isPrep && !isLate) {
-                        // Lakukan Pelunasan:
-                        // 1. Hapus nama dari missedHouses (jika ada) untuk merapikan histori WA
                         if (log.missedHouses) {
                             log.missedHouses = log.missedHouses.filter(n => n !== house.name);
                         }
-                        
-                        // 2. Catat di latePayments
                         if (!log.latePayments) log.latePayments = {};
                         log.latePayments[house.id] = todayStr;
 
-                        // 3. Tandai log ini sudah dimodifikasi agar nanti disave
                         log.isModified = true;
-
-                        // 4. Update counter
                         credits--;
                         sumDebt += JIMPITAN_VALUE;
                         houseDebtPaid += JIMPITAN_VALUE;
@@ -386,7 +456,7 @@ export default function App() {
                     debtDetailsArr.push({ name: house.name, amount: houseDebtPaid });
                 }
 
-                // B. Prepaid (Sisa kredit jadi deposit masa depan)
+                // B. Prepaid
                 if (credits > 0) {
                     housePrepaidPaid = credits * JIMPITAN_VALUE;
                     sumPrepaid += housePrepaidPaid;
@@ -394,9 +464,8 @@ export default function App() {
 
                     for (let i = 1; i <= credits; i++) {
                         const futureDate = addDays(todayStr, i);
-                        
-                        // Cari log masa depan atau buat baru
                         let futureLog = processingLogs.find(l => l.date === futureDate);
+                        
                         if (!futureLog) {
                             futureLog = { 
                                 date: futureDate, 
@@ -408,21 +477,19 @@ export default function App() {
                                 latePayments: {},
                                 officerGang: '-',
                                 note: '',
-                                houseCount: TOTAL_HOUSES,
+                                houseCount: houses.length,
                                 details: { patrol: 0, debt: 0, prepaid: 0, debtDetails: [], prepaidDetails: [] },
                                 isSimulation: false,
-                                isModified: true 
+                                isModified: true,
+                                isDeposited: false
                             };
                             processingLogs.push(futureLog);
                         } else {
                             futureLog.isModified = true;
                         }
 
-                        // Set Prepaid
                         if (!futureLog.prepaid) futureLog.prepaid = {};
                         futureLog.prepaid[house.id] = true;
-                        
-                        // Reset entry jika ada (karena sudah prepaid)
                         if (!futureLog.entries) futureLog.entries = {};
                         futureLog.entries[house.id] = 0;
                     }
@@ -431,20 +498,18 @@ export default function App() {
         }
     });
 
-    // 6. Update Data Hari Ini (Finalisasi)
     const todayLogObj = processingLogs.find(l => l.date === todayStr);
     if (todayLogObj) {
         todayLogObj.timestamp = new Date().toISOString();
         todayLogObj.officers = finalOfficers;
-        todayLogObj.officerGang = finalGang;
+        todayLogObj.officerGang = finalGang || '-';
         todayLogObj.entries = currentPatrolData;
         todayLogObj.prepaid = currentPrepaidData;
         todayLogObj.totalAmount = totalAmount;
         todayLogObj.missedHouses = missedHouses;
-        // latePayments dipertahankan dari yang sudah ada (merge logic implicit di atas)
         if(!todayLogObj.latePayments) todayLogObj.latePayments = existingLog?.latePayments || {};
         todayLogObj.note = currentPatrolNote;
-        todayLogObj.houseCount = TOTAL_HOUSES;
+        todayLogObj.houseCount = houses.length;
         todayLogObj.details = {
             patrol: sumPatrol,
             debt: sumDebt,
@@ -454,15 +519,14 @@ export default function App() {
         };
         todayLogObj.isSimulation = false;
         todayLogObj.isModified = true;
+        todayLogObj.isDeposited = existingLog?.isDeposited || false;
     }
 
-    // 7. Commit ke Firebase (Hanya yang berubah)
     const batch = writeBatch(db);
     let updateCount = 0;
 
     processingLogs.forEach(log => {
         if (log.isModified) {
-            // Hapus flag temporary sebelum save
             const { isModified, ...dataToSave } = log; 
             const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'jimpitan_logs', log.date);
             batch.set(docRef, dataToSave, { merge: true });
@@ -477,14 +541,13 @@ export default function App() {
         } else {
             showToast("Tidak ada perubahan data.", "info");
         }
-        setView('dashboard');
+        navigateBack('dashboard');
     } catch (e) {
         console.error("Gagal menyimpan patroli", e);
         showToast("Gagal menyimpan ke database.", "error");
     }
   };
 
-  // --- FUNGSI MENCATAT LOG ADMIN ---
   const recordAdminLog = async (action, details) => {
       if (!user) return;
       try {
@@ -555,6 +618,18 @@ export default function App() {
       }
   };
 
+  // --- MENGUPDATE DAFTAR WARGA (TAMBAH/HAPUS) ---
+  const handleUpdateResidents = async (updatedList) => {
+      try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_config', 'residents'), { list: updatedList });
+          await recordAdminLog('UBAH_WARGA', `Memperbarui daftar warga menjadi ${updatedList.length} KK`);
+          showToast('Daftar warga berhasil diperbarui!', 'success');
+      } catch (e) {
+          console.error(e);
+          showToast("Gagal menyimpan daftar warga", "error");
+      }
+  };
+
   if (loading) return (
       <div className="flex flex-col h-screen items-center justify-center bg-slate-900 text-white animate-pulse">
           <div className="mb-4 text-emerald-500 font-bold text-xl">Muna Permai 2</div>
@@ -565,7 +640,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative">
       {toast.show && (
-          <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[60] px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300 ${
+          <div className={`fixed top-4 left-1/2 -translate-x-1/2 z- px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300 ${
               toast.type === 'success' ? 'bg-emerald-600 text-white' : 
               toast.type === 'error' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-white'
           }`}>
@@ -575,7 +650,7 @@ export default function App() {
       )}
 
       {confirmDialog.show && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
+          <div className="fixed inset-0 z- flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
              <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center animate-in zoom-in-95">
                 <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
                     <Info size={32} className="text-amber-600" />
@@ -600,7 +675,7 @@ export default function App() {
           </div>
       )}
 
-      {view === 'login' && <LoginPage onCheckIn={handleCheckIn} onAdmin={handleAdminClick} allResidents={HOUSES} passwords={customPasswords} showToast={showToast} />}
+      {view === 'login' && <LoginPage onCheckIn={handleCheckIn} onAdmin={handleAdminClick} allResidents={houses} passwords={customPasswords} showToast={showToast} />}
 
       {view !== 'login' && view !== 'admin' && (
         <div className="max-w-md mx-auto min-h-screen bg-white shadow-xl overflow-hidden flex flex-col relative">
@@ -613,7 +688,7 @@ export default function App() {
               </span>
             </div>
             {isOffline && <WifiOff size={16} className="text-amber-300 animate-pulse" title="Koneksi Terputus" />}
-            <button onClick={() => setView('login')} className="text-xs bg-emerald-800 hover:bg-emerald-900 px-3 py-1 rounded-full flex items-center gap-1 transition-colors">
+            <button onClick={() => { setCurrentOfficers([]); navigateTo('login'); }} className="text-xs bg-emerald-800 hover:bg-emerald-900 px-3 py-1 rounded-full flex items-center gap-1 transition-colors">
               <LogOut size={12} /> Keluar
             </button>
           </header>
@@ -623,25 +698,26 @@ export default function App() {
               <Dashboard 
                 officers={currentOfficers} 
                 onStart={startPatrol} 
-                onReport={() => setView('report')}
+                onReport={() => navigateTo('report')}
                 logs={logs}
                 todayStr={todayStr}
                 showToast={showToast}
                 financialConfig={financialConfig}
                 onToggleDeposit={handleToggleDeposit}
+                houses={houses}
               />
             )}
 
             {view === 'patrol' && (
               <PatrolScreen 
-                houses={HOUSES} 
+                houses={houses} 
                 data={currentPatrolData} 
                 prepaid={currentPrepaidData}
                 note={currentPatrolNote}
                 setNote={setCurrentPatrolNote}
                 onUpdateCount={handleSmartPayment}
                 onSave={savePatrol}
-                onCancel={() => setView('dashboard')}
+                onCancel={() => navigateBack('dashboard')}
                 todayStr={todayStr}
                 logs={logs}
               />
@@ -650,8 +726,9 @@ export default function App() {
             {view === 'report' && (
                 <ReportScreen 
                     logs={logs} 
-                    onBack={() => setView('dashboard')} 
-                    showToast={showToast} 
+                    onBack={() => navigateBack('dashboard')} 
+                    showToast={showToast}
+                    houses={houses} 
                 />
             )}
           </main>
@@ -661,9 +738,11 @@ export default function App() {
       {view === 'admin' && (
         <AdminScreen 
             logs={logs} 
-            onBack={() => setView(lastView)} 
+            onBack={() => navigateBack(lastView)} 
+            houses={houses}
             passwords={customPasswords}
             onUpdatePasswords={handleSavePasswords}
+            onUpdateResidents={handleUpdateResidents}
             financialConfig={financialConfig}
             onUpdateFinancials={handleUpdateFinancials}
             onDeleteLog={handleDeleteLog}
@@ -687,7 +766,7 @@ function LoginPage({ onCheckIn, onAdmin, allResidents, passwords, showToast }) {
     { id: '', password: '' }
   ]);
 
-  const gangs = Object.keys(RAW_DATA);
+  const gangs = useMemo(() => Array.from(new Set(allResidents.map(h => h.gang))), [allResidents]);
 
   const availableResidents = useMemo(() => {
     if (!selectedGang) return [];
@@ -882,12 +961,11 @@ function LoginPage({ onCheckIn, onAdmin, allResidents, passwords, showToast }) {
   );
 }
 
-function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, financialConfig, onToggleDeposit }) {
+function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, financialConfig, onToggleDeposit, houses }) {
   const todayLog = logs.find(l => l.date === todayStr);
   const todayIncome = todayLog?.totalAmount || 0;
   const details = todayLog?.details || { patrol: 0, debt: 0, prepaid: 0 };
   
-  // PERBAIKAN: Patroli dianggap selesai HANYA JIKA sudah ada petugas yang tercatat di hari tersebut
   const isPatrolDone = logs.some(l => l.date === todayStr && l.officers && l.officers.length > 0);
   
   const currentMonth = new Date(todayStr).getMonth();
@@ -898,7 +976,6 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
   });
   const monthlyIncome = monthlyLogs.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
 
-  // --- MENGHITUNG STATUS SETOR BULAN INI ---
   const monthlyPatrolDays = monthlyLogs.filter(l => l.officers && l.officers.length > 0);
   const depositedCount = monthlyPatrolDays.filter(l => l.isDeposited).length;
   const undepositedCount = monthlyPatrolDays.filter(l => !l.isDeposited).length;
@@ -936,14 +1013,14 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
     const targetAmount = patrolDays * JIMPITAN_VALUE; 
 
     const residentPaymentMap = {};
-    HOUSES.forEach(h => {
+    houses.forEach(h => {
         residentPaymentMap[h.id] = { name: h.name, paid: 0, prepaidDays: 0 };
     });
 
     monthlyLogs.forEach(log => {
         const isCountedDay = log.date <= todayStr && log.officers && log.officers.length > 0;
 
-        HOUSES.forEach(h => {
+        houses.forEach(h => {
             let count = 0;
             if (log.entries) {
                 if (typeof log.entries[h.id] === 'number') count = log.entries[h.id];
@@ -977,7 +1054,7 @@ function Dashboard({ officers, onStart, onReport, logs, todayStr, showToast, fin
 
     return debtors.sort((a, b) => b.debt - a.debt).slice(0, 5);
 
-  }, [monthlyLogs, patrolDays, todayStr]);
+  }, [monthlyLogs, patrolDays, todayStr, houses]);
 
   return (
     <div className="p-4 space-y-6">
@@ -1232,8 +1309,6 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
     return grouped;
   }, [houses]);
 
-  // Menghitung jumlah hutang berdasarkan kalkulasi finansial Rekap Bulan Ini HINGGA KEMARIN
-  // Sehingga akurat 100% dengan Rekap Keuangan Warga
   const baseDebtMap = useMemo(() => {
     const map = {};
     houses.forEach(h => {
@@ -1243,7 +1318,6 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
     const currentMonth = new Date(todayStr).getMonth();
     const currentYear = new Date(todayStr).getFullYear();
 
-    // Hanya ambil log bulan ini sebelum hari H (masa lalu)
     const pastMonthlyLogs = (logs || []).filter(l => {
         const d = new Date(l.date);
         return d.getMonth() === currentMonth && 
@@ -1266,12 +1340,10 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
                 else if (typeof log.entries[h.id] === 'boolean') count = log.entries[h.id] ? 1 : 0;
             }
             
-            // Hitung koin masuk
             if (count > 0) {
                 map[h.id].paidCount += count;
             }
 
-            // Hitung kompensasi prepaid
             if (isPatrolDay && log.prepaid && log.prepaid[h.id]) {
                 map[h.id].prepaidDays += 1;
             }
@@ -1281,9 +1353,7 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
     const debtMap = {};
     houses.forEach(h => {
         const r = map[h.id];
-        // Target individu = Target hari - Prepaid yang berlaku
         const individualTargetCount = pastPatrolDays - r.prepaidDays;
-        // Hutang = Target - Uang Koin Masuk
         const debtCount = individualTargetCount - r.paidCount;
         debtMap[h.id] = debtCount > 0 ? debtCount : 0;
     });
@@ -1326,9 +1396,8 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
                     const isPaid = count > 0;
                     const isPrepaid = prepaid[house.id];
 
-                    // Kalkulasi status hutang dinamis saat tombol plus ditekan
                     const baseDebt = baseDebtMap[house.id] || 0;
-                    const paidDebt = Math.max(0, count - 1); // 1 koin pertama untuk hari ini, sisanya untuk hutang
+                    const paidDebt = Math.max(0, count - 1); 
                     const remainingDebt = Math.max(0, baseDebt - paidDebt);
 
                     return (
@@ -1338,7 +1407,7 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
                             className={`flex items-center gap-3 flex-1 ${!isPrepaid ? 'cursor-pointer' : 'cursor-default'}`}
                         >
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-colors shrink-0 ${isPrepaid ? 'bg-blue-200 text-blue-700' : isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
-                                {isPrepaid ? <LockKeyhole size={14} /> : house.id.replace('H','')}
+                                {isPrepaid ? <LockKeyhole size={14} /> : (house.number !== '-' ? house.number.replace('No. ','') : '✓')}
                             </div>
                             <div>
                                 <p className={`font-semibold text-sm ${isPrepaid ? 'text-blue-900' : isPaid ? 'text-emerald-900' : 'text-slate-600'}`}>{house.name}</p>
@@ -1407,7 +1476,7 @@ function PatrolScreen({ houses, data, prepaid, note, setNote, onUpdateCount, onS
   );
 }
 
-function ReportScreen({ logs, onBack, showToast }) {
+function ReportScreen({ logs, onBack, showToast, houses }) {
   const [activeTab, setActiveTab] = useState('history'); 
   const [selectedMonthKey, setSelectedMonthKey] = useState('');
   const [selectedResident, setSelectedResident] = useState(null); 
@@ -1433,7 +1502,7 @@ function ReportScreen({ logs, onBack, showToast }) {
                 officerStats: {} 
             };
             
-            HOUSES.forEach(h => {
+            houses.forEach(h => {
                 monthlyData[monthKey].residents[h.id] = {
                     id: h.id,
                     name: h.name,
@@ -1453,7 +1522,7 @@ function ReportScreen({ logs, onBack, showToast }) {
         }
 
         if (log.entries || log.prepaid) {
-            HOUSES.forEach(h => {
+            houses.forEach(h => {
                 let count = 0;
                 if (log.entries) {
                     if (typeof log.entries[h.id] === 'number') {
@@ -1464,7 +1533,8 @@ function ReportScreen({ logs, onBack, showToast }) {
                 }
 
                 const rStats = monthlyData[monthKey].residents[h.id];
-                
+                if (!rStats) return; // if deleted house
+
                 if (count > 0) {
                     rStats.paidAmount += (count * JIMPITAN_VALUE);
                     monthlyData[monthKey].totalCollected += (count * JIMPITAN_VALUE);
@@ -1491,11 +1561,11 @@ function ReportScreen({ logs, onBack, showToast }) {
         const m = monthlyData[key];
         const globalTarget = m.totalDays * JIMPITAN_VALUE;
 
-        HOUSES.forEach(h => {
+        houses.forEach(h => {
             const r = m.residents[h.id];
+            if (!r) return;
             
             const individualTarget = globalTarget - (r.prepaidDays * JIMPITAN_VALUE);
-            
             const diff = r.paidAmount - individualTarget;
 
             if (diff < 0) {
@@ -1510,7 +1580,7 @@ function ReportScreen({ logs, onBack, showToast }) {
 
     const monthKeys = Object.keys(monthlyData);
     return { monthlyData, monthKeys };
-  }, [logs]);
+  }, [logs, houses]);
 
   const historyGroups = useMemo(() => {
     const groups = {};
@@ -1565,8 +1635,8 @@ function ReportScreen({ logs, onBack, showToast }) {
 
     let gangName = log.officerGang;
     if (!gangName && log.officers && log.officers.length > 0) {
-        const firstOfficerName = log.officers[0];
-        const foundHouse = HOUSES.find(h => h.name === firstOfficerName);
+        const firstOfficerName = log.officers;
+        const foundHouse = houses.find(h => h.name === firstOfficerName);
         if (foundHouse) gangName = foundHouse.gang;
     }
 
@@ -1624,7 +1694,7 @@ https://www.munaceria.online`;
   };
   
   if (selectedResident && selectedStats) {
-      const residentObj = HOUSES.find(h => h.id === selectedResident);
+      const residentObj = houses.find(h => h.id === selectedResident);
       return (
           <ResidentCalendarModal 
             resident={residentObj} 
@@ -1888,7 +1958,7 @@ function ResidentCalendarModal({ resident, monthKey, year, month, logs, onClose 
     };
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
+        <div className="fixed inset-0 z- flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
             <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden animate-in zoom-in-95">
                 <div className="bg-slate-800 p-4 text-white flex justify-between items-center">
                     <div>
@@ -1940,7 +2010,7 @@ function ResidentCalendarModal({ resident, monthKey, year, month, logs, onClose 
     );
 }
 
-function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConfig, onUpdateFinancials, onDeleteLog, onUpdateLog, onToggleDeposit, showToast }) {
+function AdminScreen({ logs, onBack, houses, passwords, onUpdatePasswords, onUpdateResidents, financialConfig, onUpdateFinancials, onDeleteLog, onUpdateLog, onToggleDeposit, showToast }) {
     const [auth, setAuth] = useState(false);
     const [pin, setPin] = useState('');
     const [editLog, setEditLog] = useState(null);
@@ -1948,9 +2018,8 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
     const [deletingLogId, setDeletingLogId] = useState(null);
     const [tempBalance, setTempBalance] = useState('');
     const [newLogDate, setNewLogDate] = useState('');
-    const [adminLogs, setAdminLogs] = useState([]); // TAMBAHAN STATE
+    const [adminLogs, setAdminLogs] = useState([]);
 
-    // Ambil data riwayat log saat masuk panel admin
     useEffect(() => {
         if (!auth) return;
         const q = collection(db, 'artifacts', appId, 'public', 'data', 'admin_logs');
@@ -2044,8 +2113,12 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
         );
     }
     
+    if (viewMode === 'residents') {
+        return <ResidentManager currentHouses={houses} onSave={onUpdateResidents} onBack={() => setViewMode('list')} showToast={showToast} />;
+    }
+
     if (viewMode === 'password') {
-        return <PasswordManager currentPasswords={passwords} onSave={onUpdatePasswords} onBack={() => setViewMode('list')} showToast={showToast} />;
+        return <PasswordManager houses={houses} currentPasswords={passwords} onSave={onUpdatePasswords} onBack={() => setViewMode('list')} showToast={showToast} />;
     }
 
     if (viewMode === 'financial') {
@@ -2129,6 +2202,7 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
     if (viewMode === 'edit' && editLog) {
         return (
             <AdminEditor 
+                houses={houses}
                 log={editLog} 
                 onSave={handleSaveEdit} 
                 onCancel={() => { setEditLog(null); setViewMode('list'); }} 
@@ -2170,6 +2244,13 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
             </div>
             
             <div className="space-y-3 mb-6">
+                <button 
+                    onClick={() => setViewMode('residents')}
+                    className="w-full py-3 bg-teal-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-teal-700 shadow-lg"
+                >
+                    <Users size={18} /> Manajemen Warga (Tambah/Hapus)
+                </button>
+
                 <button 
                     onClick={() => setViewMode('password')}
                     className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-700 shadow-lg"
@@ -2232,7 +2313,7 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
             </div>
 
             {deletingLogId && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
+                <div className="fixed inset-0 z- flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
                     <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center animate-in zoom-in-95">
                         <div className="w-16 h-16 bg-rose-100 rounded-full flex items-center justify-center mx-auto mb-4">
                             <Trash2 size={32} className="text-rose-600" />
@@ -2262,18 +2343,169 @@ function AdminScreen({ logs, onBack, passwords, onUpdatePasswords, financialConf
     );
 }
 
-function PasswordManager({ currentPasswords, onSave, onBack, showToast }) {
+function ResidentManager({ currentHouses, onSave, onBack, showToast }) {
+    const [localHouses, setLocalHouses] = useState(currentHouses || []);
+    const [hasChanges, setHasChanges] = useState(false);
+    const [newName, setNewName] = useState('');
+    const [newGang, setNewGang] = useState('');
+    
+    // State untuk popup konfirmasi delete warga
+    const [deletingResident, setDeletingResident] = useState(null);
+
+    const dynamicGangs = useMemo(() => Array.from(new Set(localHouses.map(h => h.gang))), [localHouses]);
+
+    const handleAdd = (e) => {
+        e.preventDefault();
+        if (!newName.trim() || !newGang.trim()) {
+            showToast("Nama dan Gang harus diisi!", "error");
+            return;
+        }
+        const newId = `H_${Date.now()}`;
+        const newHouse = {
+            id: newId,
+            name: newName.trim(),
+            gang: newGang.trim(),
+            number: '-'
+        };
+        setLocalHouses([...localHouses, newHouse]);
+        setNewName('');
+        setHasChanges(true);
+        showToast(`Warga ${newHouse.name} ditambahkan. Jangan lupa Simpan.`, "success");
+    };
+
+    const handleDeleteClick = (id, name) => {
+        setDeletingResident({ id, name });
+    };
+
+    const confirmDeleteResident = () => {
+        if (deletingResident) {
+            setLocalHouses(localHouses.filter(h => h.id !== deletingResident.id));
+            setHasChanges(true);
+            setDeletingResident(null);
+        }
+    };
+
+    const residentsByGang = useMemo(() => {
+        const grouped = {};
+        localHouses.forEach(h => {
+            if (!grouped[h.gang]) grouped[h.gang] = [];
+            grouped[h.gang].push(h);
+        });
+        return grouped;
+    }, [localHouses]);
+
+    return (
+         <div className="flex flex-col h-full bg-slate-50 relative">
+            <div className="p-4 bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm flex justify-between items-center">
+                <h2 className="font-bold text-lg text-slate-800">Manajemen Warga</h2>
+                <button onClick={onBack} className="text-sm text-slate-500 font-bold">Kembali</button>
+            </div>
+
+            <div className="p-4 space-y-4 overflow-y-auto pb-40">
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><UserPlus size={16}/> Tambah Warga Baru</h3>
+                    <form onSubmit={handleAdd} className="space-y-3">
+                        <input 
+                            type="text" 
+                            placeholder="Nama Warga (Cth: Pak Budi)" 
+                            className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                            value={newName}
+                            onChange={e => setNewName(e.target.value)}
+                        />
+                        <div className="flex gap-2">
+                            <input 
+                                type="text"
+                                list="gang-options"
+                                placeholder="Pilih/Ketik Nama Gang"
+                                className="flex-1 p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                                value={newGang}
+                                onChange={e => setNewGang(e.target.value)}
+                            />
+                            <datalist id="gang-options">
+                                {dynamicGangs.map(g => <option key={g} value={g} />)}
+                            </datalist>
+                            <button type="submit" className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-emerald-700">Tambah</button>
+                        </div>
+                    </form>
+                </div>
+
+                {Object.entries(residentsByGang).map(([gangName, residents]) => (
+                    <div key={gangName} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                        <h3 className="text-xs font-bold text-slate-500 uppercase ml-1 mb-2 border-b pb-1">{gangName} <span className="text-slate-400 normal-case font-medium">({residents.length})</span></h3>
+                        <div className="space-y-1">
+                        {residents.map((house) => (
+                            <div key={house.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg group transition-colors">
+                                <span className="text-sm font-medium text-slate-700">{house.name}</span>
+                                <button 
+                                    onClick={() => handleDeleteClick(house.id, house.name)}
+                                    className="text-slate-300 hover:text-rose-500 hover:bg-rose-50 p-1.5 rounded transition-colors"
+                                    title="Hapus Warga"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </div>
+                        ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 max-w-md mx-auto">
+                <button 
+                    onClick={() => { onSave(localHouses); setHasChanges(false); }} 
+                    disabled={!hasChanges}
+                    className={`w-full py-3 text-white font-bold rounded-xl shadow-lg transition-all ${hasChanges ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-300 cursor-not-allowed'}`}
+                >
+                    Simpan Perubahan Database
+                </button>
+            </div>
+
+            {/* Modal Konfirmasi Hapus Warga */}
+            {deletingResident && (
+                <div className="fixed inset-0 z- flex items-center justify-center bg-black/60 p-4 animate-in fade-in backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center animate-in zoom-in-95">
+                        <div className="w-16 h-16 bg-rose-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <Trash2 size={32} className="text-rose-600" />
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-800 mb-2">Hapus Warga?</h3>
+                        <p className="text-sm text-slate-600 mb-6">
+                            Apakah Anda yakin ingin menghapus <strong>{deletingResident.name}</strong>?<br/><br/>
+                            <span className="text-[10px] italic">Warga ini tidak akan muncul lagi di form patroli baru dan daftar laporan, namun saldo total kas yang sudah disetor di masa lalu tidak akan berkurang.</span>
+                        </p>
+                        <div className="flex gap-3">
+                            <button 
+                                onClick={() => setDeletingResident(null)}
+                                className="flex-1 py-3 border border-slate-300 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-colors"
+                            >
+                                Batal
+                            </button>
+                            <button 
+                                onClick={confirmDeleteResident}
+                                className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 shadow-lg transition-colors"
+                            >
+                                Hapus
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+
+function PasswordManager({ houses, currentPasswords, onSave, onBack, showToast }) {
     const [passwords, setPasswords] = useState(currentPasswords || {});
     const [hasChanges, setHasChanges] = useState(false);
 
     const residentsByGang = useMemo(() => {
         const grouped = {};
-        HOUSES.forEach(h => {
+        houses.forEach(h => {
             if (!grouped[h.gang]) grouped[h.gang] = [];
             grouped[h.gang].push(h);
         });
         return grouped;
-    }, []);
+    }, [houses]);
 
     const handleChange = (id, val) => {
         setPasswords(prev => ({ ...prev, [id]: val }));
@@ -2325,22 +2557,25 @@ function PasswordManager({ currentPasswords, onSave, onBack, showToast }) {
     );
 }
 
-function AdminEditor({ log, onSave, onCancel }) {
+function AdminEditor({ houses, log, onSave, onCancel }) {
     const [data, setData] = useState(log.entries || {});
     const [prepaid, setPrepaid] = useState(log.prepaid || {});
     const [officers, setOfficers] = useState((log.officers || []).join(', '));
     const [gang, setGang] = useState(log.officerGang || '-');
     const [note, setNote] = useState(log.note || '');
     const [latePayments, setLatePayments] = useState(log.latePayments || {});
+    const [isDeposited, setIsDeposited] = useState(log.isDeposited || false);
+
+    const dynamicGangs = useMemo(() => Array.from(new Set(houses.map(h => h.gang))), [houses]);
 
     const residentsByGang = useMemo(() => {
         const grouped = {};
-        HOUSES.forEach(h => {
+        houses.forEach(h => {
             if (!grouped[h.gang]) grouped[h.gang] = [];
             grouped[h.gang].push(h);
         });
         return grouped;
-    }, []);
+    }, [houses]);
 
     const updateCount = (houseId, delta) => {
         if (prepaid[houseId] || latePayments[houseId]) return;
@@ -2375,7 +2610,7 @@ function AdminEditor({ log, onSave, onCancel }) {
             if (newLate[houseId]) {
                 delete newLate[houseId];
             } else {
-                newLate[houseId] = new Date().toISOString().split('T')[0];
+                newLate[houseId] = new Date().toISOString().split('T');
                 setData(prevData => ({ ...prevData, [houseId]: 0 }));
                 setPrepaid(prevPrep => {
                     const newPrep = { ...prevPrep };
@@ -2390,11 +2625,9 @@ function AdminEditor({ log, onSave, onCancel }) {
     const handleSave = () => {
         const totalAmount = Object.values(data).reduce((sum, count) => sum + (count * JIMPITAN_VALUE), 0);
         
-        // Perbaikan Bug: Pastikan officers yang di-save tidak mengandung string kosong
         const cleanOfficers = officers.split(',').map(s => s.trim()).filter(s => s.length > 0);
 
-        // Calculate auto missed houses (standard logic)
-        const autoMissed = HOUSES.filter(h => {
+        const autoMissed = houses.filter(h => {
             const count = typeof data[h.id] === 'number' ? data[h.id] : (data[h.id] ? 1 : 0);
             const isPrep = prepaid[h.id];
             const isLate = latePayments[h.id];
@@ -2404,13 +2637,14 @@ function AdminEditor({ log, onSave, onCancel }) {
         const updatedLog = {
             ...log,
             officers: cleanOfficers,
-            officerGang: gang,
+            officerGang: gang || '-',
             entries: data,
             prepaid: prepaid,
             totalAmount,
             missedHouses: autoMissed,
             latePayments: latePayments, 
-            note
+            note,
+            isDeposited
         };
         
         onSave(updatedLog);
@@ -2433,10 +2667,20 @@ function AdminEditor({ log, onSave, onCancel }) {
                         <input type="text" className="w-full p-2 border rounded-lg text-sm" value={officers} onChange={e => setOfficers(e.target.value)} />
                     </div>
                     <div>
+                        <label className="text-xs font-bold text-slate-500 uppercase">Status Setor ke Bendahara</label>
+                        <div 
+                            className={`flex items-center gap-2 mt-1 p-2 rounded-lg border cursor-pointer select-none transition-colors ${isDeposited ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}
+                            onClick={() => setIsDeposited(!isDeposited)}
+                        >
+                            <input type="checkbox" checked={isDeposited} onChange={e => setIsDeposited(e.target.checked)} className="w-4 h-4 accent-emerald-600 pointer-events-none" />
+                            <span className="text-sm font-semibold">{isDeposited ? '✅ Uang Sudah Diterima' : '⏳ Belum Disetor'}</span>
+                        </div>
+                    </div>
+                    <div>
                         <label className="text-xs font-bold text-slate-500 uppercase">Asal Gang</label>
                         <select className="w-full p-2 border rounded-lg text-sm bg-white" value={gang} onChange={e => setGang(e.target.value)}>
                             <option value="-">-</option>
-                            {Object.keys(RAW_DATA).map(g => <option key={g} value={g}>{g}</option>)}
+                            {dynamicGangs.map(g => <option key={g} value={g}>{g}</option>)}
                         </select>
                     </div>
                     <div>
